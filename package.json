@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Local-first software audit CLI with reviewable, verified fixes",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "Mucip ÖZ <sm@elithost.com.tr> (https://elithost.com.tr)",
   "engines": {
     "node": ">=20"
   },
