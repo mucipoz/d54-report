@@ -201,3 +201,25 @@ it('warns about unignored output directory only when inside target root using re
   const ignoredRes = await runScan({ path: root, out: customOut, browser: false, modules: ['security'] });
   expect(ignoredRes.report.coverage.some(c => c.includes('dışlanmıyor'))).toBe(false);
 });
+
+it('eyleme dönüştürülen kapsam notlarını coverage içinde raporlar', async () => {
+  const emptyBin = await mkdtemp(join(tmpdir(), 'd54-engine-bin-'));
+  const prevPath = process.env.PATH;
+  process.env.PATH = emptyBin;
+  try {
+    await writeFile(join(root, 'requirements.txt'), 'requests==2.28.0\n');
+    await writeFile(join(root, 'huge.js'), Buffer.alloc(1_048_576 + 10, 'x'));
+    const scan = await runScan({ path: root, out, browser: false, modules: ['errors', 'security'] });
+    expect(scan.report.coverage).toContain('Tip/lint/derleme atlandı. CLI: --trusted; MCP: operatör D54_MCP_TRUSTED_ROOT ayarlar (yalnız incelenmiş proje).');
+    expect(scan.report.coverage).toContain('pip-audit bulunamadı. Kurulum: pipx install pip-audit');
+    expect(scan.report.coverage.some(c => c.startsWith('Boyut sınırı nedeniyle içeriği okunmayan: huge.js'))).toBe(true);
+  } finally {
+    process.env.PATH = prevPath;
+    await rm(emptyBin, { recursive: true, force: true });
+  }
+});
+
+it('güvenilir modda güven atlama notu coverage içinde yer almaz', async () => {
+  const scan = await runScan({ path: root, out, trusted: true, browser: false, modules: ['errors'] });
+  expect(scan.report.coverage.join(' ')).not.toContain('Tip/lint/derleme atlandı');
+});

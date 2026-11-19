@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { categories, type Category, type Issue, type SourceFile } from '../types.js';
 import { pathsOf } from './static-utils.js';
 import { prepareAudit } from './audit-input.js';
@@ -23,6 +23,7 @@ interface Run {
   stdout: string;
   stderr: string;
   problem?: string;
+  skipped?: number;
 }
 
 function run(task: Task, timeout: number, isolated?: NodeJS.ProcessEnv): Promise<Run> {
@@ -71,7 +72,8 @@ async function auditRun(root: string, task: Task, files: readonly SourceFile[], 
     const cwd = join(temp, 'input'), home = join(temp, 'home');
     await mkdir(cwd);
     await mkdir(home);
-    try { await prepareAudit(root, task.file, task.audit!, cwd, pathsOf(files)); }
+    let skipped = 0;
+    try { ({ skipped } = await prepareAudit(root, task.file, task.audit!, cwd, pathsOf(files))); }
     catch { return { code: null, stdout: '', stderr: '', problem: 'güvenli denetim girdisi üretilemedi. Özel kaynak, desteklenmeyen sürüm, büyük veya eksik kilit dosyası olabilir' }; }
     const env: NodeJS.ProcessEnv = { PATH: hostToolPath(root,task.command), HOME: home, USERPROFILE: home, TMPDIR: temp, TEMP: temp,
       CI: 'true', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
@@ -80,7 +82,8 @@ async function auditRun(root: string, task: Task, files: readonly SourceFile[], 
       npm_config_userconfig: join(home, 'user.npmrc'), npm_config_globalconfig: join(home, 'global.npmrc'),
       PYTHONNOUSERSITE: '1', PIP_NO_INPUT: '1', PIP_CONFIG_FILE: process.platform === 'win32' ? 'NUL' : '/dev/null' };
     if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
-    return await run({ ...task, cwd }, timeout, env);
+    const result = await run({ ...task, cwd }, timeout, env);
+    return skipped ? { ...result, skipped } : result;
   } finally { await rm(temp, { recursive: true, force: true }); }
 }
 
@@ -92,6 +95,20 @@ function compilerAt(cwd: string, root: string): string | undefined {
     if (dir === root || dirname(dir) === dir) return undefined;
     dir = dirname(dir);
   }
+}
+
+function ancestorLock(dir: string, paths: ReadonlySet<string>): string | undefined {
+  let current = posix.normalize(dir.split(sep).join('/'));
+  while (current !== '.' && current !== '/' && current !== '') {
+    const parent = posix.dirname(current);
+    if (parent === current) break;
+    for (const lockName of ['package-lock.json', 'npm-shrinkwrap.json']) {
+      const candidate = parent === '.' ? lockName : posix.join(parent, lockName);
+      if (paths.has(candidate)) return candidate;
+    }
+    current = parent;
+  }
+  return undefined;
 }
 
 function plan(root: string, files: readonly SourceFile[], notes: string[], audits: boolean, checks: boolean, rustChecks: boolean): Task[] {
@@ -106,7 +123,13 @@ function plan(root: string, files: readonly SourceFile[], notes: string[], audit
     if (audits && name === 'package.json') {
       if (sibling('package-lock.json') || sibling('npm-shrinkwrap.json')) {
         add('npm audit', 'npm', ['audit', '--json', '--ignore-scripts', '--fetch-retries=0'], 'npm');
-      } else notes.push(file.path + ' için npm kilit dosyası bulunamadı. npm danışmanlık denetimi atlandı.');
+      } else if (sibling('pnpm-lock.yaml') || sibling('yarn.lock')) {
+        notes.push(file.path + ' — pnpm/yarn kilidi desteklenmiyor; npm danışmanlık denetimi atlandı.');
+      } else {
+        const parentLock = ancestorLock(dir, paths);
+        if (parentLock) notes.push(file.path + ' — kök kilidiyle denetlendi (' + parentLock + ').');
+        else notes.push(file.path + ' için npm kilit dosyası bulunamadı. npm danışmanlık denetimi atlandı.');
+      }
     }
     if (checks && name === 'package.json') {
       try {
@@ -247,7 +270,7 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
   const audits = modules.includes('security'), checks = modules.includes('errors');
   const rustOnly = modules.includes('specialized') && !checks && files.some(f=>basename(f.path)==='Cargo.toml');
   if (rustOnly && !trusted) notes.push('Cargo check ve clippy için güvenilir yerel proje izni gerekir.');
-  if (checks && !trusted) notes.push('Proje komutları için güvenilir çalışma izni verilmedi. Tip, lint ve derleme araçları atlandı.');
+  if (checks && !trusted) notes.push('Tip/lint/derleme atlandı. CLI: --trusted; MCP: operatör D54_MCP_TRUSTED_ROOT ayarlar (yalnız incelenmiş proje).');
   if (!audits && !((checks || rustOnly) && trusted)) return { issues, notes, completion };
   const planned = plan(root, files, notes, audits, checks && trusted, (checks || rustOnly) && trusted);
   const tasks = [...planned.filter(t => t.audit), ...planned.filter(t => !t.audit)];
@@ -267,7 +290,15 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
     try { result = task.audit ? await auditRun(root, task, files, timeout) : await run(task, timeout); }
     catch { notes.push(task.file + ' — ' + task.label + ' çalışma ortamı hazırlanamadı veya temizlenemedi.'); continue; }
     const label = task.file + ' — ' + task.label;
-    if (result.problem) { notes.push(label + ' tamamlanamadı (' + result.problem + ').'); continue; }
+    if (result.skipped) notes.push(task.file + ' — ' + result.skipped + ' kilit girdisi denetim dışı kaldı (npm dışı kaynak, geçersiz ad/sürüm veya atlanan üst paket).');
+    if (result.problem) {
+      if (task.command === 'pip-audit' && result.problem === 'araç bulunamadı') {
+        notes.push('pip-audit bulunamadı. Kurulum: pipx install pip-audit');
+      } else {
+        notes.push(label + ' tamamlanamadı (' + result.problem + ').');
+      }
+      continue;
+    }
     if (task.audit) {
       let rows: Advisory[] | undefined;
       try { rows = advisories(task.audit, JSON.parse(result.stdout)); }

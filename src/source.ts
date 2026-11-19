@@ -11,6 +11,7 @@ export async function snapshot(root: string, excluded?: string) {
   root = await realpath(root);
   const files: SourceFile[] = [];
   const notes: string[] = [];
+  const largeFiles: string[] = [];
   let bytes = 0, skipped = 0, unreadable = 0, visited = 0;
   async function walk(dir: string, bundlesOnly = false): Promise<void> {
     let entries;
@@ -36,7 +37,7 @@ export async function snapshot(root: string, excluded?: string) {
         if (bundlesOnly && (size <= 1_048_576 || !/\.(?:[cm]?js|css|png|jpe?g|svg|glb|gltf|webp)$/i.test(name))) continue;
         const metadataOnly = bundlesOnly || assetExt.test(name) || lock.test(path) || /^\.env(?:$|\.(?!example$|sample$|template$))/.test(name) || /\.(key|pem)$/.test(name);
         const tooLarge = size > 1_048_576 || bytes + size > 48 * 1024 * 1024;
-        if (tooLarge && !metadataOnly) skipped++;
+        if (tooLarge && !metadataOnly) { skipped++; largeFiles.push(path); }
         const body = metadataOnly || tooLarge ? '' : (await readBoundedFile(full, Math.min(1_048_576, 48 * 1024 * 1024 - bytes))).toString('utf8');
         bytes += Buffer.byteLength(body);
         files.push({ path, text: body, size });
@@ -45,6 +46,11 @@ export async function snapshot(root: string, excluded?: string) {
   }
   await walk(root);
   if (skipped) notes.push('Dosya, girdi veya bellek sınırına ulaşıldı. Büyük dosyalar yalnız boyut bilgisiyle değerlendirildi. Kapsam kısmi.');
+  if (largeFiles.length) {
+    const sample = largeFiles.slice(0, 10).join(', ');
+    const more = largeFiles.length > 10 ? ` (+${largeFiles.length - 10})` : '';
+    notes.push(`Boyut sınırı nedeniyle içeriği okunmayan: ${sample}${more}`);
+  }
   if (unreadable) notes.push(`${unreadable} dosya/dizin okunamadı.`);
   return { files, notes };
 }

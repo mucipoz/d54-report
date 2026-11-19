@@ -77,6 +77,18 @@ supports recognized Vite, Next, Astro and Node development server scripts.
 Security findings use source evidence, dependency advisories and observed page
 headers. A finding may need manual confirmation.
 
+Dependency advisories support npm (`package-lock.json` / `npm-shrinkwrap.json`),
+Cargo, Composer and pinned `requirements.txt` (`pnpm-lock.yaml` and `yarn.lock`
+are not supported). npm workspace lockfiles are audited from the root lockfile,
+so a member without its own lockfile receives a `"kök kilidiyle denetlendi"`
+note in `coverage`. npm package aliases are audited under their real package
+name, while entries with a non-npm source, invalid name/version or a skipped
+parent package are individually omitted and counted in `coverage`. When
+`pip-audit` is missing, `coverage` suggests `pipx install pip-audit`. On
+untrusted projects, type, lint and build checks are skipped; pass `--trusted` on
+the CLI, or have the operator set `D54_MCP_TRUSTED_ROOT` for MCP (reviewed
+local projects only).
+
 `summary.counts` records each severity and `summary.health` scores completed
 checks. Use `findings[].id` to select issues. The default `fix --mode patch`
 saves a diff. Interactive mode prompts before changing a file. PR mode requires
@@ -176,25 +188,33 @@ D54_CHROMIUM_SANDBOX=0 d54-report scan --path ./demo-app --no-llm
 
 ### Bağımlılıklar, ağ ve kapsam notları
 
-Varsayılan bağımlılık denetimi geçici dizin ve ayrı bir ev dizini kullanır. npm,
-Cargo, Composer için desteklenen kilit dosyasından, pip için tam sürüme
-sabitlenmiş `requirements.txt` dosyasından temizlenmiş denetim girdisi üretir.
-Paket adları ve sürümleri genel danışmanlık hizmetlerine gönderilebilir. Araçlar
-sırasıyla `npm`, `cargo-audit`, `composer` ve `pip-audit` olarak PATH üzerinden
-bulunur. Eksik araç, güvenle okunamayan girdi, ağ hatası veya zaman aşımı
-raporun `coverage` alanında görünür.
+Varsayılan bağımlılık denetimi geçici dizin ve ayrı bir ev dizini kullanır. npm
+(`package-lock.json` / `npm-shrinkwrap.json`), Cargo ve Composer için
+desteklenen kilit dosyasından, pip için tam sürüme sabitlenmiş
+`requirements.txt` dosyasından temizlenmiş denetim girdisi üretir (`pnpm-lock.yaml`
+ve `yarn.lock` desteklenmez). npm workspace kilitleri kök kilitten denetlenir;
+kendi kilidi olmayan üye `coverage` içinde `"kök kilidiyle denetlendi"` notu
+alır. npm takma adları gerçek paket adıyla denetlenir; npm dışı kaynak, geçersiz
+ad/sürüm veya atlanan üst pakete bağlı girdiler ise tek tek dışarıda bırakılır
+ve kapsam notunda sayılır. Paket adları ve sürümleri genel danışmanlık
+hizmetlerine gönderilebilir. Araçlar sırasıyla `npm`, `cargo-audit`, `composer`
+ve `pip-audit` olarak PATH üzerinden bulunur; `pip-audit` yoksa kurulum için
+`pipx install pip-audit` ipucu verilir. Eksik araç, güvenle okunamayan girdi, ağ
+hatası veya zaman aşımı raporun `coverage` alanında görünür.
 
 `--no-llm` model yapılandırmasını ve model çağrılarını kapatır. Uzak depo, canlı
 URL ve danışmanlık hizmetleri ayrı ağ işlemleridir. Çevrimdışı çalışırken kurulu
 CLI'ı kullanın, yerel bir `--path` seçin ve tarayıcı gerekmiyorsa `--no-browser`
 verin. Dış ağın kapalı olduğu ortamda danışmanlık sonuçları kısmi kalabilir.
 
-`--trusted` incelenmiş yerel projede TypeScript, mypy, PHP lint, PHPStan, cargo
-check/clippy/build ve tanımlı npm build gibi proje komutlarını etkinleştirir. Bu
-komutlar proje kodunu ve yapılandırmasını kullanabilir. Kaynak toplamada
-sembolik bağlantılar ve derleme dizinleri atlanır. Dosya içeriği başına 1 MiB ve
-toplamda 48 MiB okuma bütçesi vardır. Büyük dosyalar veya kilit dosyaları genel
-kaynak taramasına yalnız boyut bilgisiyle girebilir.
+Güvenilmeyen projede tip, lint ve derleme denetimleri atlanır; CLI'da
+`--trusted`, MCP için ise operatör `D54_MCP_TRUSTED_ROOT` ayarlar (yalnız
+incelenmiş yerel projede). `--trusted` TypeScript, mypy, PHP lint, PHPStan,
+cargo check/clippy/build ve tanımlı npm build gibi proje komutlarını
+etkinleştirir. Bu komutlar proje kodunu ve yapılandırmasını kullanabilir. Kaynak
+toplamada sembolik bağlantılar ve derleme dizinleri atlanır. Dosya içeriği
+başına 1 MiB ve toplamda 48 MiB okuma bütçesi vardır. Büyük dosyalar veya kilit
+dosyaları genel kaynak taramasına yalnız boyut bilgisiyle girebilir.
 
 ### Yanlış alarm azaltma
 
