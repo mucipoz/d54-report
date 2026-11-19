@@ -223,3 +223,27 @@ it('güvenilir modda güven atlama notu coverage içinde yer almaz', async () =>
   const scan = await runScan({ path: root, out, trusted: true, browser: false, modules: ['errors'] });
   expect(scan.report.coverage.join(' ')).not.toContain('Tip/lint/derleme atlandı');
 });
+
+it('triage requires llm in CLI and attaches triage after makeReport without changing scores', async () => {
+  const repo = fileURLToPath(new URL('../', import.meta.url));
+  const cli = join(repo, 'dist', 'cli.js');
+  await expect(promisify(execFile)(process.execPath, [
+    cli, 'scan', '--path', root, '--out', out, '--no-llm', '--no-browser', '--triage',
+  ], { cwd: repo, timeout: 20_000 })).rejects.toMatchObject({
+    code: 1,
+    stderr: expect.stringContaining('--triage için --llm gerekir'),
+  });
+
+  await writeFile(join(root, 'app.js'), 'eval(userInput);\n');
+  const baseline = await runScan({ path: root, out, browser: false, modules: ['security'] });
+  const provider = {
+    model: 'test-triage-model',
+    complete: async () => JSON.stringify({ verdict: 'yanlış alarm', reason: 'Örnek test kodu' }),
+  };
+  const triaged = await runScan({ path: root, out, browser: false, modules: ['security'], provider, triage: true });
+  expect(triaged.report.summary).toEqual(baseline.report.summary);
+  expect(triaged.report.priority).toEqual(baseline.report.priority);
+  const evalFinding = triaged.report.findings.find(f => f.rule === 'security.dynamic-eval');
+  expect(evalFinding?.triage).toEqual({ verdict: 'yanlış alarm', reason: 'Örnek test kodu' });
+  expect(triaged.report.coverage.some(c => c.startsWith('Triyaj:') && c.includes('Model: test-triage-model'))).toBe(true);
+});

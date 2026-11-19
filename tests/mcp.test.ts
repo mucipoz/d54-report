@@ -249,3 +249,21 @@ it('returns suppressed and suppressedKnownCredentials and notes suppressed known
     await rm(temp, { recursive: true, force: true });
   }
 }, 60_000);
+
+it('triage requires llm in MCP d54_scan_project', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-triage-'));
+  try {
+    await writeFile(join(temp, 'app.js'), 'eval(x);\n');
+    await withMcpClient(temp, async client => {
+      const scan = await client.callTool({
+        name: 'd54_scan_project',
+        arguments: { path: temp, modules: ['security'], use_llm: false, triage: true },
+      });
+      expect(scan.isError).toBe(true);
+      const text = (scan.content as { type: string; text: string }[])[0]!.text;
+      expect(text).toContain('use_llm');
+    });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}, 60_000);

@@ -3,7 +3,7 @@ import type { SourceFile, Issue } from '../types.js';
 import { structuralSource } from './outline.js';
 
 const dimensions = ['authorization','license','rate-limit','race-condition','business-logic'] as const;
-export const sensitive = /(?:password|passwd|secret|token|api.?key|authorization\s*:|BEGIN .*PRIVATE KEY|:\/\/[^\s/]+@|[\w+/=-]{36,})/i;
+export const sensitive = /(?:password|passwd|secret|token|api.?key|authorization\s*:|\bbearer\s+\S|BEGIN .*PRIVATE KEY|:\/\/[^\s/]+@|[\w+/=-]{36,})/i;
 // Use structural context only. No comments, string values, environment files or lockfiles.
 function outline(file: SourceFile) {
   return structuralSource(file).split(/\r?\n/).slice(0,1200).flatMap((raw,i) => {

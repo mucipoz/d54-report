@@ -20,8 +20,10 @@ function common(cmd:Command) {
 common(app.command('scan').description('Statik analiz ve tarayıcı denetimi'))
   .option('--repo <github-url>').option('--url <http-url>').option('--no-browser','statik site önizlemesini ve Playwright taramasını atla')
   .option('--fail-on-critical','kritik bulguda 2 ile çık')
+  .option('--triage','kritik ve yüksek bulguları model ile triyaj et')
   .action(async o => {
     if (o.url && o.browser === false) throw Error('--url ve --no-browser birlikte kullanılamaz.');
+    if (o.triage && !o.llm) throw Error('--triage için --llm gerekir.');
     const {report,prefix,unavailable} = await runScan({...o,provider:o.llm ? await loadProvider(o.config) : undefined});
     console.log(o.json ? JSON.stringify(report) : `${report.summary.total} bulgu · ${report.summary.health}/100\n${prefix}.md\n${prefix}.json`);
     if (o.failOnCritical && report.summary.counts.critical) process.exitCode=2;

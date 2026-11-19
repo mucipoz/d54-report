@@ -27,7 +27,17 @@ export function markdown(report: Report): string {
       const konum = [location, `kural ${f.rule}`].filter(Boolean).map(escape).join(' · ');
       lines.push(`- **[${f.id} | ${labels[f.severity]}] ${escape(f.title)}**`, '  - Konum · '+konum,
         '  - Sorun · '+escape(f.evidence),'  - Etki · '+escape(f.impact),'  - Çözüm · '+escape(f.advice));
+      if (f.triage) lines.push('  - Model: '+escape(f.triage.verdict)+' · '+escape(f.triage.reason));
       if (f.screenshot && /^screenshots\/[\w./-]+\.png$/.test(f.screenshot) && !f.screenshot.includes('..')) lines.push('  - [Ekran görüntüsü]('+f.screenshot+')');
+    }
+  }
+  const falsePositives = report.findings.filter(f => f.triage?.verdict === 'yanlış alarm');
+  if (falsePositives.length) {
+    lines.push('','## Model yanlış alarm dedi','');
+    for (const f of falsePositives) {
+      const location = f.file ? f.file+(f.line ? ':'+f.line : '') : [f.url,f.selector,f.viewport].filter(Boolean).join(' · ');
+      const locPart = location ? escape(location)+' · ' : '';
+      lines.push(`- **${f.id}** · ${locPart}kural ${escape(f.rule)} · ${escape(f.triage!.reason)}`);
     }
   }
   lines.push('','## Öncelikli aksiyon planı','');

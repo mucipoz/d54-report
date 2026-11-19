@@ -107,4 +107,27 @@ describe('report contract', () => {
     const md = markdown(report);
     expect(md).toContain('  - Konum · src/app.ts:7 · kural security.literal-secret');
   });
+
+  it('markdown separates false positives and escapes triage reason', () => {
+    const report = makeReport(target, [], 1, [
+      issue({ rule: 'security.literal-secret', category: 'security', severity: 'high', file: 'src/fp.ts', line: 3 }),
+      issue({ rule: 'security.eval', category: 'security', severity: 'critical', file: 'src/real.ts', line: 9 }),
+    ], [], date);
+    report.findings[0] = {
+      ...report.findings[0]!,
+      triage: { verdict: 'gerçek', reason: 'Gerçek tehlike' },
+    };
+    report.findings[1] = {
+      ...report.findings[1]!,
+      triage: { verdict: 'yanlış alarm', reason: 'Test <script> | *örnek* [x]' },
+    };
+    const md = markdown(report);
+    expect(md).toContain('  - Model: yanlış alarm');
+    const fpSection = md.split('## Model yanlış alarm dedi')[1]!.split('## Öncelikli aksiyon planı')[0]!;
+    expect(fpSection).toContain('SEC-002');
+    expect(fpSection).toContain('security.literal-secret');
+    expect(fpSection).toContain('src/fp.ts:3');
+    expect(fpSection).toContain('Test &lt;script&gt; \\| \\*örnek\\* \\[x\\]');
+    expect(fpSection).not.toContain('SEC-001');
+  });
 });

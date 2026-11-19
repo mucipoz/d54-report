@@ -419,6 +419,32 @@ it('redacts sensitive lines including aws_secret_access_key, out-of-window PEM b
   expect(res.findings[0]!.triage).toEqual({ verdict: 'gerçek', reason: 'Gizli bilgi sızıntısı' });
 });
 
+it('masks short Bearer tokens without colons in triage context', async () => {
+  const shortTok = 'abc123Short';
+  const files = [
+    makeSource('src/auth.ts', [
+      `headers.Authorization = "Bearer ${shortTok}";`,
+      'return fetch(url, { headers });',
+    ].join('\n')),
+  ];
+  const findings = [
+    makeFinding({
+      id: 'SEC-051',
+      file: 'src/auth.ts',
+      line: 1,
+      title: 'Authorization başlığı',
+      evidence: `headers.Authorization = "Bearer ${shortTok}"`,
+    }),
+  ];
+
+  const complete = vi.fn(async () => JSON.stringify({ verdict: 'gerçek', reason: 'Sabit token' }));
+  await triage({ model: 'm1', complete }, findings, files);
+  expect(complete).toHaveBeenCalledOnce();
+  const [, input] = complete.mock.calls[0]!;
+  expect(input).not.toContain(shortTok);
+  expect(input).toContain('<gizli satır>');
+});
+
 it('uses per-request nonce delimiters and neutralizes delimiter spoofing in source and finding text', async () => {
   const files = [
     makeSource('src/spoof.ts', [

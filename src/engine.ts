@@ -17,6 +17,7 @@ import { scanSignals } from './scanners/review-signals.js';
 import { syntax } from './scanners/syntax.js';
 import { scanUI } from './scanners/ui-design.js';
 import { review } from './llm/review.js';
+import { triage } from './llm/triage.js';
 import type { LLMProvider } from './llm/provider.js';
 import { json, makeReport } from './reporters/json.js';
 import { markdown } from './reporters/markdown.js';
@@ -101,7 +102,7 @@ function verifyCoverage(scan: Awaited<ReturnType<typeof collectStatic>>, modules
   return scan.issues;
 }
 
-interface ScanOptions {path?:string;repo?:string;url?:string;out:string;provider?:LLMProvider;trusted?:boolean;browser?:boolean;modules?:readonly Category[]}
+interface ScanOptions {path?:string;repo?:string;url?:string;out:string;provider?:LLMProvider;trusted?:boolean;browser?:boolean;modules?:readonly Category[];triage?:boolean}
 export async function runScan(o:ScanOptions) {
   const modules = selectedModules(o.modules);
   const inspectSources = modules.some(m => m !== 'ui');
@@ -197,8 +198,23 @@ export async function runScan(o:ScanOptions) {
         }
       }
     }
+    const baseReport = makeReport(target, stack, files.length, keptIssues, notes);
+    let finalFindings = baseReport.findings;
+    let finalCoverage = baseReport.coverage;
+    if (o.triage) {
+      if (!o.provider) throw Error('--triage için --llm gerekir.');
+      try {
+        const triaged = await triage(o.provider, baseReport.findings, files);
+        finalFindings = triaged.findings;
+        finalCoverage = [...finalCoverage, ...triaged.notes];
+      } catch {
+        finalCoverage = [...finalCoverage, 'Triyaj tamamlanamadı. Sağlayıcı bağlantısını ve modeli kontrol edin.'];
+      }
+    }
     const report: Report = {
-      ...makeReport(target, stack, files.length, keptIssues, notes),
+      ...baseReport,
+      findings: finalFindings,
+      coverage: finalCoverage,
       modules,
       ...(suppressedCount > 0 ? { suppressed: suppressedCount } : {}),
       ...(suppressedKnownCredentials > 0 ? { suppressedKnownCredentials } : {}),
