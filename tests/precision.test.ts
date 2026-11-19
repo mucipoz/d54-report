@@ -73,4 +73,18 @@ describe('şifre kuralı', () => {
     expect(isTestPath('src/foo.spec.tsx')).toBe(true);
     expect(isTestPath('src/config.ts')).toBe(false);
   });
+
+  it('jwt shaped dotted value stays high', () => {
+    const fakeJwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJ1c2VyMSJ9', 'abc123def456'].join('.');
+    const issues = secretIssues('src/auth.ts', `const token = "${fakeJwt}";`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('mapbox secret token stays high', () => {
+    const fakeSk = ['sk', 'eyJ1Ijo1234567890', 'AbCd9876EfGh5432'].join('.');
+    const issues = secretIssues('src/maps.ts', `const accessToken = "${fakeSk}";`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
 });

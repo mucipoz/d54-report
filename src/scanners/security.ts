@@ -5,7 +5,7 @@ import { isScript, isTestPath, lineOf, report, scanLines, treeOf, walk } from '.
 
 const credentialName = /(?:password|passwd|secret|token|api[_-]?key|private[_-]?key)$/i;
 const publicName = /^(?:NEXT_PUBLIC_|EXPO_PUBLIC_|VITE_|PUBLIC_)|public/i;
-const dotPath = /^[a-z][\w]*(?:\.[a-zA-Z]\w*)+$/;
+const dotPath = /^[a-zA-Z_]+(?:\.[a-zA-Z_]+)+$/;
 const sample = /^(?:[<{$*]|\.{2}|x{3,}|example|sample|demo|dummy|test|fake|fixture|placeholder|replace|change[-_]?me|your[-_]|redacted|none$|null$)/i;
 const knownCredential = /(?:\bAKIA[A-Z0-9]{16}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bxox[baprs]-[A-Za-z0-9-]{20,}\b|-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----)/;
 const settingAssignment = /(?:^|[\s{,])["']?([\w-]+)["']?\s*[:=]\s*(?:"([^"\n]+)"|'([^'\n]+)'|([^\s#,}]+))/g;
@@ -21,7 +21,7 @@ function literalCredential(name: string, value: string): boolean {
     && !trimmed.endsWith('.apps.googleusercontent.com')
     && !trimmed.startsWith('/')
     && !/\s/.test(trimmed)
-    && !dotPath.test(trimmed);
+    && !(trimmed.length <= 60 && dotPath.test(trimmed));
 }
 
 export function maskSecrets(line: string): string {
