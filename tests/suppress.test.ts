@@ -126,4 +126,40 @@ describe('suppress', () => {
     expect(md).toContain('Bastırılan gerçek biçimli anahtar · 1');
     expect(knownCredentialEvidence).toBe('Bilinen bir anahtar biçimi bulundu (AWS/GitHub/Slack/özel anahtar). Değer gizlendi.');
   });
+
+  it('treats dots literally and rejects patterns over 256 chars', async () => {
+    const dotIssues = [
+      makeIssue({ file: 'a.b' }),
+      makeIssue({ file: 'aXb' }),
+    ];
+    const dotRes = applySuppressions(dotIssues, [
+      { rule: '*', path: 'a.b', reason: 'nokta tam eslesmeli' },
+    ]);
+    expect(dotRes.kept.map(i => i.file)).toEqual(['aXb']);
+
+    const longPattern = 'src/' + 'a'.repeat(255) + '.ts';
+    await writeFile(join(root, '.d54report-ignore'), `security.target-blank ${longPattern} # cok uzun\n`);
+    const loaded = await loadSuppressions(root);
+    expect(loaded.rules).toEqual([]);
+    expect(loaded.notes).toContain('.d54report-ignore:1 desen çok uzun, yok sayıldı');
+  });
+
+  it('pathological glob finishes fast', { timeout: 5000 }, () => {
+    const pattern1 = '*a'.repeat(12) + '*b';
+    const pattern2 = '**/'.repeat(20) + 'x';
+    const path1 = 'a'.repeat(40);
+    const path2 = Array.from({ length: 25 }, () => 'aaaa').join('/') + '/y';
+    const issues: Issue[] = Array.from({ length: 100 }, (_, idx) =>
+      makeIssue({ file: idx % 2 === 0 ? path1 : path2, line: idx + 1 }),
+    );
+    const start = performance.now();
+    const res = applySuppressions(issues, [
+      { rule: '*', path: pattern1, reason: 'redos 1' },
+      { rule: '*', path: pattern2, reason: 'redos 2' },
+    ]);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(200);
+    expect(res.suppressed).toBe(0);
+    expect(res.kept).toHaveLength(100);
+  });
 });

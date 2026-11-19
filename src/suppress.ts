@@ -12,33 +12,74 @@ export type Suppression = {
 };
 
 const MAX_IGNORE_BYTES = 256 * 1024;
+const MAX_PATTERN_LENGTH = 256;
 const IGNORE_FILENAME = '.d54report-ignore';
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
-function globToRegExp(pattern: string): RegExp {
-  const normalized = normalizePath(pattern);
-  let out = '^';
-  for (let i = 0; i < normalized.length;) {
-    if (normalized[i] === '*' && normalized[i + 1] === '*') {
-      if (normalized[i + 2] === '/') {
-        out += '(?:.*/)?';
-        i += 3;
-      } else {
-        out += '.*';
-        i += 2;
-      }
-    } else if (normalized[i] === '*') {
-      out += '[^/]*';
-      i += 1;
+function matchSegment(pat: string, str: string): boolean {
+  let pi = 0;
+  let si = 0;
+  let starIdx = -1;
+  let matchIdx = 0;
+
+  while (si < str.length) {
+    if (pi < pat.length && pat[pi] === str[si]) {
+      pi++;
+      si++;
+    } else if (pi < pat.length && pat[pi] === '*') {
+      starIdx = pi;
+      matchIdx = si;
+      pi++;
+    } else if (starIdx !== -1) {
+      pi = starIdx + 1;
+      matchIdx++;
+      si = matchIdx;
     } else {
-      out += normalized[i]!.replace(/[-/\\^$+?.()|[\]{}]/g, '\\$&');
-      i += 1;
+      return false;
     }
   }
-  return new RegExp(out + '$');
+
+  while (pi < pat.length && pat[pi] === '*') {
+    pi++;
+  }
+
+  return pi === pat.length;
+}
+
+function matchGlob(pattern: string, filePath: string): boolean {
+  const patSegs = normalizePath(pattern).split('/');
+  const pathSegs = normalizePath(filePath).split('/');
+
+  let pi = 0;
+  let si = 0;
+  let starIdx = -1;
+  let matchIdx = 0;
+
+  while (si < pathSegs.length) {
+    if (pi < patSegs.length && patSegs[pi] === '**') {
+      starIdx = pi;
+      matchIdx = si;
+      pi++;
+    } else if (pi < patSegs.length && matchSegment(patSegs[pi]!, pathSegs[si]!)) {
+      pi++;
+      si++;
+    } else if (starIdx !== -1) {
+      pi = starIdx + 1;
+      matchIdx++;
+      si = matchIdx;
+    } else {
+      return false;
+    }
+  }
+
+  while (pi < patSegs.length && patSegs[pi] === '**') {
+    pi++;
+  }
+
+  return pi === patSegs.length;
 }
 
 export async function loadSuppressions(root: string): Promise<{ rules: Suppression[]; notes: string[] }> {
@@ -90,9 +131,19 @@ export async function loadSuppressions(root: string): Promise<{ rules: Suppressi
         notes.push(`${IGNORE_FILENAME}:${lineNum} geçersiz satır numarası, yok sayıldı`);
         continue;
       }
-      rules.push({ rule, path: normalizePath(lineMatch[1]), line: parsedLine, reason });
+      const path = normalizePath(lineMatch[1]);
+      if (path.length > MAX_PATTERN_LENGTH) {
+        notes.push(`${IGNORE_FILENAME}:${lineNum} desen çok uzun, yok sayıldı`);
+        continue;
+      }
+      rules.push({ rule, path, line: parsedLine, reason });
     } else {
-      rules.push({ rule, path: normalizePath(rawTarget), reason });
+      const path = normalizePath(rawTarget);
+      if (path.length > MAX_PATTERN_LENGTH) {
+        notes.push(`${IGNORE_FILENAME}:${lineNum} desen çok uzun, yok sayıldı`);
+        continue;
+      }
+      rules.push({ rule, path, reason });
     }
   }
 
@@ -107,17 +158,17 @@ export function applySuppressions(
     return { kept: issues, suppressed: 0, suppressedKnownCredentials: 0 };
   }
 
-  const compiled = rules.map(rule => ({ rule, regex: globToRegExp(rule.path) }));
   const kept: Issue[] = [];
   let suppressed = 0;
   let suppressedKnownCredentials = 0;
 
   for (const issue of issues) {
     const file = issue.file ? normalizePath(issue.file) : undefined;
-    const matched = file !== undefined && compiled.some(({ rule, regex }) =>
-      (rule.rule === '*' || rule.rule === issue.rule)
+    const matched = file !== undefined && rules.some(rule =>
+      rule.path.length <= MAX_PATTERN_LENGTH
+      && (rule.rule === '*' || rule.rule === issue.rule)
       && (rule.line === undefined || rule.line === issue.line)
-      && regex.test(file),
+      && matchGlob(rule.path, file),
     );
     if (matched) {
       suppressed++;
