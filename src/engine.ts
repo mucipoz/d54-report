@@ -1,6 +1,5 @@
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
-import { lstat, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { lstat, realpath, stat } from 'node:fs/promises';
 import { snapshot, technology } from './source.js';
 import { gitState } from './git-state.js';
 import { checkout, githubRepoUrl, preview } from './targets.js';
@@ -19,8 +18,8 @@ import { scanUI } from './scanners/ui-design.js';
 import { review } from './llm/review.js';
 import { triage } from './llm/triage.js';
 import type { LLMProvider } from './llm/provider.js';
-import { json, makeReport } from './reporters/json.js';
-import { markdown } from './reporters/markdown.js';
+import { makeReport } from './reporters/json.js';
+import { writeReport } from './reporters/write.js';
 import { applySuppressions, loadSuppressions } from './suppress.js';
 
 const sourceScanners = { errors, security, performance, bugs, specialized };
@@ -219,12 +218,7 @@ export async function runScan(o:ScanOptions) {
       ...(suppressedCount > 0 ? { suppressed: suppressedCount } : {}),
       ...(suppressedKnownCredentials > 0 ? { suppressedKnownCredentials } : {}),
     };
-    const slug=(target.project.replace(/[^a-z0-9_-]+/gi,'-') || 'project').slice(0,64);
-    const prefix=resolve(out,`d54-report-${slug}-${report.createdAt.replace(/[:.]/g,'-')}-${randomUUID().slice(0,8)}`);
-    await ensureOutputDirectory(out);
-    await writeFile(prefix+'.md',markdown(report),{flag:'wx',mode:0o600});
-    try { await writeFile(prefix+'.json',json(report),{flag:'wx',mode:0o600}); }
-    catch (error) { await rm(prefix+'.md',{force:true}); throw error; }
+    const prefix = await writeReport(out, report);
     return {report,prefix,unavailable:unavailable || sourceUnavailable,browserUnavailable:unavailable};
   } finally {
     try { if (server) await server.close(); } finally { await remote?.cleanup(); }

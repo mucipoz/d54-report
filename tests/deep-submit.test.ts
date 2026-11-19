@@ -1,0 +1,200 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { runScan } from '../src/engine.js';
+import { readReport } from '../src/reporters/read.js';
+import { prepareDeepReview } from '../src/deep/session.js';
+import { deepCategories, deepFindingSchema, submitDeepReview } from '../src/deep/submit.js';
+
+describe('deep/submit', () => {
+  let temp: string;
+  let project: string;
+  let out: string;
+
+  beforeEach(async () => {
+    temp = await mkdtemp(join(tmpdir(), 'd54-deep-submit-'));
+    project = join(temp, 'proj');
+    out = join(temp, 'reports');
+    await mkdir(join(project, 'src'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(temp, { recursive: true, force: true });
+  });
+
+  it('exposes deepCategories in exact priority order and validates deepFindingSchema', () => {
+    expect(deepCategories).toEqual([
+      'authz',
+      'business-rule',
+      'race',
+      'async',
+      'null',
+      'logic',
+      'boundary',
+      'error-handling',
+    ]);
+    const valid = deepFindingSchema.safeParse({
+      category: 'logic',
+      file: 'src/order.ts',
+      line: 3,
+      quote: 'if (qty > maxQty)',
+      title: 'Ters sınır koşulu',
+      impact: 'Geçerli sipariş reddedilir.',
+      advice: 'Koşulu düzeltin.',
+      severity: 'high',
+      verdict: 'confirmed',
+      reason: 'Fonksiyon içinde başka kontrol yok.',
+    });
+    expect(valid.success).toBe(true);
+  });
+
+  it('rejects each invalid case with Turkish reason, caps severity, deduplicates, and merges into previous scan report', async () => {
+    const orderCode = [
+      'export function processOrder(user: { isAdmin: boolean }, qty: number) {',
+      '  const apiKey = "sk_live_HIDDEN_KEY_999999";',
+      '  if (qty < 0 || qty === 0) {',
+      '    return { ok: true, charged: qty * 100 };',
+      '  }',
+      '  if (!user.isAdmin) {',
+      '    return { ok: true, adminBypass: true };',
+      '  }',
+      '  return { ok: false };',
+      '}',
+    ].join('\n') + '\n';
+
+    const mutableCode = [
+      'export function updateWallet(balance: number, delta: number) {',
+      '  return balance - delta;',
+      '}',
+    ].join('\n') + '\n';
+
+    await writeFile(join(project, 'src/order.ts'), orderCode);
+    await writeFile(join(project, 'src/wallet.ts'), mutableCode);
+    // Add a file with a static issue so runScan produces an initial finding to preserve
+    await writeFile(join(project, 'src/legacy.js'), 'export function run(x) { return eval(x); }\n');
+
+    const initialScan = await runScan({ path: project, out, browser: false });
+    expect(initialScan.report.findings.length).toBeGreaterThanOrEqual(1);
+    const initialHealth = initialScan.report.summary.health;
+    const initialRule = initialScan.report.findings[0]!.rule;
+
+    const prep = await prepareDeepReview(project, out, {});
+
+    // Modify wallet.ts AFTER prepare to trigger "kaynak değişti" (Review Focus #2)
+    await writeFile(
+      join(project, 'src/wallet.ts'),
+      'export function updateWallet(balance: number, delta: number) {\n  return balance + delta;\n}\n',
+    );
+
+    const base = {
+      category: 'logic',
+      file: 'src/order.ts',
+      line: 4,
+      quote: 'return { ok: true, charged: qty * 100 };',
+      title: 'Sıfır veya negatif miktarda başarılı sipariş dönüyor',
+      impact: 'Negatif veya sıfır tutarla sipariş onaylanır.',
+      advice: 'Negatif veya sıfır miktarda hata döndürün.',
+      severity: 'critical',
+      verdict: 'confirmed',
+      reason: 'Satır 3-4 doğrudan ok:true döndürüyor.',
+    };
+
+    const items: unknown[] = [
+      // 0: invalid schema
+      { category: 'unknown-cat', file: 'src/order.ts', line: 0 },
+      // 1: not confirmed
+      { ...base, verdict: 'uncertain' },
+      // 2: unknown file
+      { ...base, file: 'src/nonexistent.ts' },
+      // 3: source changed after prepare
+      { ...base, file: 'src/wallet.ts', line: 2, quote: 'return balance - delta;' },
+      // 4: out-of-range line
+      { ...base, line: 999 },
+      // 5: masked secret line (line 2)
+      { ...base, line: 2, quote: 'const apiKey' },
+      // 6: quote does not match line 4
+      { ...base, quote: 'completelyDifferentCall()' },
+      // 7: text > 800 chars
+      { ...base, title: 'u'.repeat(801) },
+      // 8: text contains secret pattern
+      { ...base, advice: 'Set password: superSecretValue and bearer abcdef123456' },
+      // 9: VALID logic finding with severity 'critical' -> capped to 'high'
+      base,
+      // 10: DUPLICATE (same file + line + category) -> first stays
+      { ...base, title: 'İkinci tekrar başlık' },
+      // 11: VALID authz finding with severity 'critical' -> stays 'critical' & category 'security'
+      {
+        category: 'authz',
+        file: 'src/order.ts',
+        line: 7,
+        quote: 'return   { ok: true,   adminBypass: true };', // whitespace normalized match!
+        title: 'Yetkisiz kullanıcıya adminBypass veriliyor',
+        impact: 'Admin olmayan kullanıcı yetkili işlem yapar.',
+        advice: 'Yetkisiz durumda erişimi reddedin.',
+        severity: 'critical',
+        verdict: 'confirmed',
+        reason: '!user.isAdmin dalında ok:true dönüyor.',
+      },
+    ];
+
+    const res = await submitDeepReview(project, out, prep.session, items, { uncertain: 2, rejected: 3 });
+
+    expect(res.accepted).toBe(2);
+    expect(res.rejected).toHaveLength(9);
+    expect(res.rejected.map(r => r.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(res.rejected[3]!.reason).toContain('kaynak değişti');
+
+    // Previous scan findings are preserved
+    expect(res.report.findings.some(f => f.rule === initialRule)).toBe(true);
+
+    // Logic finding: rule review.deep.logic, category bugs, severity capped critical -> high, first title kept
+    const logicFinding = res.report.findings.find(f => f.rule === 'review.deep.logic');
+    expect(logicFinding).toBeDefined();
+    expect(logicFinding!.category).toBe('bugs');
+    expect(logicFinding!.severity).toBe('high');
+    expect(logicFinding!.title).toBe('Derin inceleme (ajan) · Sıfır veya negatif miktarda başarılı sipariş dönüyor');
+    expect(logicFinding!.evidence).toBe('Satır 4: return { ok: true, charged: qty * 100 };');
+
+    // Authz finding: rule review.deep.authz, category security, severity remains critical
+    const authzFinding = res.report.findings.find(f => f.rule === 'review.deep.authz');
+    expect(authzFinding).toBeDefined();
+    expect(authzFinding!.category).toBe('security');
+    expect(authzFinding!.severity).toBe('critical');
+
+    // Health score recalculated downward and saved report on disk is valid
+    expect(res.report.summary.health).toBeLessThan(initialHealth);
+    expect(res.report.coverage.some(c => c.includes('2 kabul, 9 ret, ajan bildirimi 2 belirsiz / 3 çürütülen'))).toBe(true);
+    expect(res.report.coverage.some(c => c.includes('Ajan doğrulamasını D54 Report kanıtlayamaz'))).toBe(true);
+
+    const saved = await readReport(res.prefix + '.json');
+    expect(saved.summary.total).toBe(res.report.summary.total);
+  });
+
+  it('creates a standalone report when no prior scan report exists in out', async () => {
+    await writeFile(
+      join(project, 'src/auth.ts'),
+      'export function canEdit(role: string) {\n  return role !== "admin";\n}\n',
+    );
+    const prep = await prepareDeepReview(project, out, {});
+    const res = await submitDeepReview(project, out, prep.session, [
+      {
+        category: 'authz',
+        file: 'src/auth.ts',
+        line: 2,
+        quote: 'return role !== "admin";',
+        title: 'Admin rolü ters kontrol ediliyor',
+        impact: 'Yetkisiz kullanıcılar düzenleme yapabilir.',
+        advice: 'role === "admin" olarak değiştirin.',
+        severity: 'critical',
+        verdict: 'confirmed',
+        reason: '!== işleci yetkiyi tersine çeviriyor.',
+      },
+    ]);
+    expect(res.accepted).toBe(1);
+    expect(res.report.filesScanned).toBe(0);
+    expect(res.report.stack).toEqual([]);
+    expect(res.report.findings).toHaveLength(1);
+    expect(res.report.findings[0]!.id).toBe('SEC-001');
+  });
+});
