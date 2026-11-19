@@ -124,6 +124,7 @@ describe('report contract', () => {
     const md = markdown(report);
     expect(md).toContain('  - Model: yanlış alarm');
     const fpSection = md.split('## Model yanlış alarm dedi')[1]!.split('## Öncelikli aksiyon planı')[0]!;
+    expect(fpSection.trimStart().startsWith('Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.')).toBe(true);
     expect(fpSection).toContain('SEC-002');
     expect(fpSection).toContain('security.literal-secret');
     expect(fpSection).toContain('src/fp.ts:3');

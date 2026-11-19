@@ -9,8 +9,21 @@ const MAX_CONTEXT_CHARS = 4000;
 const MAX_REASON_CHARS = 300;
 const UNREADABLE_REASON = 'model cevabı okunamadı';
 const REDACTED_LINE = '<gizli satır>';
+const TRIAGE_INFO_NOTE = 'Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.';
+const SKIPPED_SECRET_RULES = new Set(['security.literal-secret', 'security.service-account-key']);
 const PEM_BEGIN = /-----BEGIN [^\n]*PRIVATE KEY-----/i;
 const PEM_END = /-----END [^\n]*PRIVATE KEY-----/i;
+const TRIAGE_SENSITIVE_PATTERNS: readonly RegExp[] = [
+  sensitive,
+  /\b\w*(?:pass|pwd|credential|auth|key)\w*["']?\s*[:=]/i,
+  /\b[sr]k_(?:live|test)_/,
+  /\bBasic\s+[A-Za-z0-9+/=]{8,}/,
+  /\bpwd=/i,
+];
+
+function isSensitiveForTriage(text: string): boolean {
+  return TRIAGE_SENSITIVE_PATTERNS.some(pattern => pattern.test(text));
+}
 
 interface Delimiters {
   findingStart: string;
@@ -52,7 +65,7 @@ function sanitizeInline(text: string): string {
 }
 
 function sanitizeFindingText(text: string): string {
-  if (sensitive.test(text)) return REDACTED_LINE;
+  if (isSensitiveForTriage(text)) return REDACTED_LINE;
   return sanitizeInline(text);
 }
 
@@ -80,7 +93,7 @@ function buildContext(text: string, lineNumber?: number): string {
   for (let n = start; n <= end; n++) {
     const marker = n === target ? '>' : ' ';
     const rawLine = lines[n - 1] ?? '';
-    const masked = pemLines.has(n) || sensitive.test(rawLine)
+    const masked = pemLines.has(n) || isSensitiveForTriage(rawLine)
       ? REDACTED_LINE
       : neutralizeDelimiters(maskSecrets(rawLine));
     formatted.set(n, `${marker} ${n}: ${masked}`);
@@ -175,22 +188,30 @@ export async function triage(
   const outputFindings: Finding[] = [];
   let sent = 0;
   let skippedNoContext = 0;
+  let skippedSecret = 0;
+  let skippedLimit = 0;
   let errors = 0;
 
   for (const finding of findings) {
     const copy: Finding = { ...finding };
     if (finding.severity === 'critical' || finding.severity === 'high') {
-      const source = finding.file ? fileMap.get(finding.file) : undefined;
-      if (!source || !source.text) {
-        skippedNoContext++;
-      } else if (sent < maxItems) {
-        sent++;
-        const delimiters = makeDelimiters();
-        try {
-          const reply = await provider.complete(buildSystemPrompt(delimiters), buildInput(finding, source, delimiters));
-          copy.triage = parseReply(reply);
-        } catch {
-          errors++;
+      if (SKIPPED_SECRET_RULES.has(finding.rule)) {
+        skippedSecret++;
+      } else {
+        const source = finding.file ? fileMap.get(finding.file) : undefined;
+        if (!source || !source.text) {
+          skippedNoContext++;
+        } else if (sent < maxItems) {
+          sent++;
+          const delimiters = makeDelimiters();
+          try {
+            const reply = await provider.complete(buildSystemPrompt(delimiters), buildInput(finding, source, delimiters));
+            copy.triage = parseReply(reply);
+          } catch {
+            errors++;
+          }
+        } else {
+          skippedLimit++;
         }
       }
     }
@@ -198,9 +219,19 @@ export async function triage(
   }
 
   const modelName = provider.model?.trim();
-  const modelSuffix = modelName ? ` Model: ${modelName}` : '';
-  const notes: string[] = [`Triyaj: ${sent} bulgu modele gönderildi (sınır ${maxItems}).${modelSuffix}`];
-  if (skippedNoContext > 0) {
+  const limitSuffix = skippedLimit > 0 ? ` ${skippedLimit} bulgu sınır nedeniyle gönderilmedi.` : '';
+  const modelSuffix = modelName ? ` Model: ${modelName}.` : '';
+  const notes: string[] = [
+    `Triyaj: ${sent} bulgu modele gönderildi (sınır ${maxItems}).${limitSuffix}${modelSuffix} ${TRIAGE_INFO_NOTE}`,
+  ];
+  const skippedTotal = skippedNoContext + skippedSecret;
+  if (skippedSecret > 0) {
+    const reasons = [
+      ...(skippedNoContext > 0 ? ['kaynak dosya bağlamı bulunamadı'] : []),
+      'gizli değer bulguları triyaja gönderilmez',
+    ].join('; ');
+    notes.push(`${skippedTotal} kritik/yüksek bulgu atlandı (${reasons}).`);
+  } else if (skippedNoContext > 0) {
     notes.push(`${skippedNoContext} kritik/yüksek bulgu kaynak dosya bağlamı bulunamadığı için atlandı.`);
   }
   if (errors > 0) {

@@ -33,7 +33,7 @@ export function markdown(report: Report): string {
   }
   const falsePositives = report.findings.filter(f => f.triage?.verdict === 'yanlış alarm');
   if (falsePositives.length) {
-    lines.push('','## Model yanlış alarm dedi','');
+    lines.push('','## Model yanlış alarm dedi','','Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.','');
     for (const f of falsePositives) {
       const location = f.file ? f.file+(f.line ? ':'+f.line : '') : [f.url,f.selector,f.viewport].filter(Boolean).join(' · ');
       const locPart = location ? escape(location)+' · ' : '';

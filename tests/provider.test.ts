@@ -229,7 +229,7 @@ it('attaches verdict from model only for critical/high findings and exposes mode
   expect(res.findings[2]!.triage).toBeUndefined();
   expect(res.findings[3]!.triage).toBeUndefined();
   expect(findings[0]!.triage).toBeUndefined();
-  expect(res.notes).toContain('Triyaj: 2 bulgu modele gönderildi (sınır 30). Model: fixture-model');
+  expect(res.notes).toContain('Triyaj: 2 bulgu modele gönderildi (sınır 30). Model: fixture-model. Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.');
 
   // Check ±15 line window for line 20 (lines 5..35, not 4 or 36)
   expect(firstInput).toContain('5: const line_5 = 5;');
@@ -271,7 +271,7 @@ it('masks secret before sending to provider and omits Model suffix when model is
   const res = await triage({ complete }, findings, files);
   expect(complete).toHaveBeenCalledOnce();
   expect(res.findings[0]!.triage).toEqual({ verdict: 'yanlış alarm', reason: 'Örnek anahtar' });
-  expect(res.notes).toContain('Triyaj: 1 bulgu modele gönderildi (sınır 30).');
+  expect(res.notes).toContain('Triyaj: 1 bulgu modele gönderildi (sınır 30). Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.');
   expect(res.notes.join('\n')).not.toContain('Model:');
 });
 
@@ -329,7 +329,7 @@ it('respects limit and bounds context to 4000 characters', async () => {
   expect(res.findings[0]!.triage).toBeDefined();
   expect(res.findings[1]!.triage).toBeDefined();
   expect(res.findings[2]!.triage).toBeUndefined();
-  expect(res.notes).toContain('Triyaj: 2 bulgu modele gönderildi (sınır 2). Model: m1');
+  expect(res.notes).toContain('Triyaj: 2 bulgu modele gönderildi (sınır 2). 1 bulgu sınır nedeniyle gönderilmedi. Model: m1. Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.');
 });
 
 it('never removes findings when provider fails or when finding file is absent from files', async () => {
@@ -352,7 +352,7 @@ it('never removes findings when provider fails or when finding file is absent fr
   expect(res.findings[1]!.triage).toBeUndefined();
   expect(res.findings[2]!.triage).toBeUndefined();
   expect(res.notes).toEqual([
-    'Triyaj: 1 bulgu modele gönderildi (sınır 1). Model: m1',
+    'Triyaj: 1 bulgu modele gönderildi (sınır 1). 1 bulgu sınır nedeniyle gönderilmedi. Model: m1. Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.',
     '2 kritik/yüksek bulgu kaynak dosya bağlamı bulunamadığı için atlandı.',
     'Triyaj sırasında 1 bulguda model hatası veya zaman aşımı oluştu.',
   ]);
@@ -492,4 +492,97 @@ it('uses per-request nonce delimiters and neutralizes delimiter spoofing in sour
   expect(stripped).not.toContain('>>>');
   expect(stripped).toContain('‹‹‹');
   expect(stripped).toContain('›››');
+});
+
+it('redacts common secret patterns in triage source context and finding metadata without affecting review', async () => {
+  const s1 = 'hunter2' + 'xyz';
+  const s2 = 'kurgusal' + 'Sifre1';
+  const s3 = 'ornek' + 'Kimlik2';
+  const s4 = 'sk_' + 'live_' + 'AbCdEfGhIjKlMnOpQrStUvWxYz123456';
+  const s5 = 'MyP4' + 'ss';
+  const s6 = 'p@ss' + '12345';
+  const s7 = 'abcd' + '1234efgh';
+  const s8 = 'dXNlcjpw' + 'YXNz';
+
+  const lines = [
+    `DB_PASS: ${s1}`,
+    `pwd: ${s2}`,
+    `credentials: ${s3}`,
+    `stripe: ${s4}`,
+    `conn: Server=x;Uid=sa;Pwd=${s5};`,
+    `pass: "${s6}"`,
+    `key: "${s7}"`,
+    `auth: "Basic ${s8}"`,
+    'const safeCall = evaluateInput(userArg);',
+  ];
+  const files = [makeSource('src/settings.ts', lines.join('\n'))];
+  const findings: Finding[] = [
+    makeFinding({
+      id: 'SEC-070',
+      rule: 'security.dynamic-eval',
+      file: 'src/settings.ts',
+      line: 9,
+      title: `Şüpheli ayar: pass: "${s6}"`,
+      evidence: `auth: "Basic ${s8}"`,
+    }),
+    makeFinding({
+      id: 'SEC-071',
+      rule: 'security.dynamic-eval',
+      file: 'src/settings.ts',
+      line: 9,
+      title: `Bağlantı: Server=x;Uid=sa;Pwd=${s5};`,
+      evidence: `stripe: ${s4}`,
+    }),
+  ];
+
+  const complete = vi.fn(async () => JSON.stringify({ verdict: 'belirsiz', reason: 'Maskeli bağlam' }));
+  await triage({ model: 'm1', complete }, findings, files);
+  expect(complete).toHaveBeenCalledTimes(2);
+
+  for (const [, input] of complete.mock.calls) {
+    for (const secret of [s1, s2, s3, s4, s5, s6, s7, s8]) {
+      expect(input).not.toContain(secret);
+    }
+    expect(input).toContain('<gizli satır>');
+    expect(input).toContain('const safeCall = evaluateInput(userArg);');
+  }
+});
+
+it('skips literal-secret and service-account-key findings, includes them in skipped count, and appends informational disclaimer to triage coverage note', async () => {
+  const files = [makeSource('src/app.ts', 'const ok = eval(userInput);\nconst a = 1;\nconst b = 2;')];
+  const findings: Finding[] = [
+    makeFinding({ id: 'SEC-001', rule: 'security.literal-secret', severity: 'critical', file: 'src/app.ts', line: 2 }),
+    makeFinding({ id: 'SEC-002', rule: 'security.service-account-key', severity: 'high', file: 'src/app.ts', line: 3 }),
+    makeFinding({ id: 'SEC-003', rule: 'security.dynamic-eval', severity: 'high', file: 'missing.ts', line: 1 }),
+    makeFinding({ id: 'SEC-004', rule: 'security.dynamic-eval', severity: 'critical', file: 'src/app.ts', line: 1 }),
+  ];
+
+  const complete = vi.fn(async () => JSON.stringify({ verdict: 'gerçek', reason: 'Doğrudan eval çağrısı' }));
+  const res = await triage({ model: 'm1', complete }, findings, files);
+
+  expect(complete).toHaveBeenCalledOnce();
+  expect(res.findings[0]!.triage).toBeUndefined();
+  expect(res.findings[1]!.triage).toBeUndefined();
+  expect(res.findings[2]!.triage).toBeUndefined();
+  expect(res.findings[3]!.triage).toEqual({ verdict: 'gerçek', reason: 'Doğrudan eval çağrısı' });
+
+  const infoWarning = 'Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.';
+  expect(res.notes[0]).toContain('Triyaj: 1 bulgu modele gönderildi (sınır 30).');
+  expect(res.notes[0]!.endsWith(infoWarning)).toBe(true);
+  expect(res.notes.some(n => n.startsWith('3 kritik/yüksek bulgu') && n.includes('atlandı') && n.includes('gizli değer bulguları triyaja gönderilmez'))).toBe(true);
+});
+
+it('reports how many findings were not sent when the default 30 limit is exceeded', async () => {
+  const files = [makeSource('src/many.ts', 'eval(x);\n')];
+  const findings: Finding[] = Array.from({ length: 33 }, (_, i) =>
+    makeFinding({ id: `SEC-${String(i + 1).padStart(3, '0')}`, rule: 'security.dynamic-eval', severity: 'high', file: 'src/many.ts', line: 1 }),
+  );
+  const complete = vi.fn(async () => JSON.stringify({ verdict: 'gerçek', reason: 'Test' }));
+  const res = await triage({ model: 'm1', complete }, findings, files);
+
+  expect(complete).toHaveBeenCalledTimes(30);
+  expect(res.findings[29]!.triage).toBeDefined();
+  expect(res.findings[30]!.triage).toBeUndefined();
+  expect(res.notes[0]).toContain('Triyaj: 30 bulgu modele gönderildi (sınır 30).');
+  expect(res.notes[0]).toContain('3 bulgu sınır nedeniyle gönderilmedi');
 });
