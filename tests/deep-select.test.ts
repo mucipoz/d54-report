@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { SourceFile } from '../src/types.js';
 import { riskScore, selectFiles, validRef } from '../src/deep/select.js';
+import { prepareDeepReview } from '../src/deep/session.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -121,5 +123,23 @@ describe('deep/select', () => {
     const res = await selectFiles(files, temp, { limit: 8 });
     expect(res.selected.map(f => f.path)).toEqual([ktPath, javaPath]);
     expect(res.notes).toEqual([]);
+  });
+
+  it('does not execute repo diff.external during prepareDeepReview --since', async () => {
+    const repo = join(temp, 'ext-diff-repo');
+    const out = join(temp, 'out');
+    const pwned = join(temp, 'PWNED');
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await execFileAsync('git', ['init', repo]);
+    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    await execFileAsync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    await writeFile(join(repo, 'src/auth.ts'), 'export const a = 1;\n');
+    await execFileAsync('git', ['add', 'src/auth.ts'], { cwd: repo });
+    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: repo });
+    await writeFile(join(repo, 'src/auth.ts'), 'export const a = 2;\n');
+    await execFileAsync('git', ['config', 'diff.external', `touch ${pwned} #`], { cwd: repo });
+
+    await prepareDeepReview(repo, out, { since: 'HEAD' });
+    expect(existsSync(pwned)).toBe(false);
   });
 });

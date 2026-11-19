@@ -52,7 +52,13 @@ async function recentGitChanges(root: string): Promise<Map<string, number>> {
   try {
     const { stdout } = await execFileAsync(
       'git',
-      [...safeGitArgs, 'log', '--since=90.days', '--name-only', '--format=', '--', '.'],
+      [
+        ...safeGitArgs,
+        '-c', 'core.quotepath=false',
+        'log',
+        '--no-ext-diff', '--no-textconv', '--no-color', '--relative',
+        '--since=90.days', '--name-only', '--format=', '--', '.',
+      ],
       { cwd: root, maxBuffer: 16 * 1024 * 1024, timeout: 10_000, env: repositoryEnv() },
     );
     for (const raw of stdout.split(/\r?\n/)) {
@@ -82,7 +88,14 @@ async function diffRangesSince(root: string, ref: string): Promise<Map<string, A
   try {
     ({ stdout } = await execFileAsync(
       'git',
-      [...safeGitArgs, 'diff', '--unified=0', '-M', ref, '--'],
+      [
+        ...safeGitArgs,
+        '-c', 'core.quotepath=false',
+        'diff',
+        '--no-ext-diff', '--no-textconv', '--no-color', '--relative',
+        '--src-prefix=a/', '--dst-prefix=b/',
+        '--unified=0', '-M', ref, '--',
+      ],
       { cwd: root, maxBuffer: 32 * 1024 * 1024, timeout: 15_000, env: repositoryEnv() },
     ));
   } catch {
