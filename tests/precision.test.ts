@@ -158,4 +158,24 @@ describe('git durumu', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('service account file keeps other known credentials', () => {
+    const header = '-----BEGIN ' + 'PRIVATE KEY-----';
+    const footer = '-----END ' + 'PRIVATE KEY-----';
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    const json = JSON.stringify({
+      type: 'service_account',
+      private_key: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC\n${footer}\n`,
+      extra_aws_key: fakeAws,
+    }, null, 2);
+    const keyLine = json.split('\n').findIndex(l => l.includes('"private_key"')) + 1;
+    const file = source('sa.json', json);
+    const issues = security(file, [file]);
+    const saIssues = issues.filter(i => i.rule === 'security.service-account-key');
+    const literalIssues = issues.filter(i => i.rule === 'security.literal-secret');
+    expect(saIssues).toHaveLength(1);
+    expect(literalIssues).toHaveLength(1);
+    expect(literalIssues[0]?.severity).toBe('high');
+    expect(literalIssues[0]?.line).not.toBe(keyLine);
+  });
 });
