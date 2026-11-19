@@ -142,4 +142,28 @@ describe('deep/select', () => {
     await prepareDeepReview(repo, out, { since: 'HEAD' });
     expect(existsSync(pwned)).toBe(false);
   });
+
+  it('matches changed files under a subdirectory root and non-ASCII paths with --since HEAD~1', async () => {
+    const repo = join(temp, 'subroot-repo');
+    const appRoot = join(repo, 'app');
+    const out = join(temp, 'subroot-out');
+    await mkdir(join(appRoot, 'src'), { recursive: true });
+    await execFileAsync('git', ['init', repo]);
+    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    await execFileAsync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+
+    await writeFile(join(appRoot, 'src/auth.ts'), 'export const auth = 1;\n');
+    await writeFile(join(appRoot, 'src/Özel.ts'), 'export const ozel = 1;\n');
+    await execFileAsync('git', ['add', 'app/src/auth.ts', 'app/src/Özel.ts'], { cwd: repo });
+    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: repo });
+
+    await writeFile(join(appRoot, 'src/auth.ts'), 'export const auth = 2;\n');
+    await writeFile(join(appRoot, 'src/Özel.ts'), 'export const ozel = 2;\n');
+    await execFileAsync('git', ['add', 'app/src/auth.ts', 'app/src/Özel.ts'], { cwd: repo });
+    await execFileAsync('git', ['commit', '-m', 'update'], { cwd: repo });
+
+    const res = await prepareDeepReview(appRoot, out, { since: 'HEAD~1' });
+    expect(res.summary.files).toContain('src/auth.ts');
+    expect(res.summary.files).toContain('src/Özel.ts');
+  });
 });
