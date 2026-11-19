@@ -192,12 +192,25 @@ describe('araç girdileri', () => {
 
   it('pip-audit bulunamadığında kurulum talimatı içeren not üretir', async () => {
     const root = await mkdtemp(join(tmpdir(), 'd54-pip-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'd54-bin-'));
+    const prevPath = process.env.PATH;
+    process.env.PATH = emptyBin;
     try {
       await writeFile(join(root, 'requirements.txt'), 'requests==2.28.0\n');
       const file = source('requirements.txt', 'requests==2.28.0\n');
       const result = await scanTools(root, [file], false, ['security']);
       expect(result.notes).toContain('pip-audit bulunamadı. Kurulum: pipx install pip-audit');
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+      process.env.PATH = prevPath;
+      await rm(emptyBin, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('güvenilir modda güven atlama notu üretilmez', async () => {
+    const file = source('package.json', '{"scripts":{"build":"fixture-build"}}');
+    const result = await scanTools(tmpdir(), [file], true, ['errors']);
+    expect(result.notes.join(' ')).not.toContain('Tip/lint/derleme atlandı');
   });
 
   it('büyük dosyalarda ilk 10 yol ve kalan sayısını içeren not üretir', async () => {

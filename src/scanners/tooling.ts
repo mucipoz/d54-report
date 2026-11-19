@@ -285,11 +285,7 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
       catch { /* Bozuk veya eksik sonuç temiz sayılmaz. */ }
       const knownExit = result.code === 0 || result.code === 1 || (task.audit === 'composer' && result.code === 3);
       if (!rows || !knownExit || (result.code !== 0 && !rows.length)) {
-        if (task.command === 'pip-audit' && (result.code === 127 || /not found|bulunamadı/i.test(result.stderr))) {
-          notes.push('pip-audit bulunamadı. Kurulum: pipx install pip-audit');
-        } else {
-          notes.push(label + ' geçerli danışmanlık sonucu vermedi. Araç kurulumu, kilit dosyası ve ağ erişimini kontrol edin.');
-        }
+        notes.push(label + ' geçerli danışmanlık sonucu vermedi. Araç kurulumu, kilit dosyası ve ağ erişimini kontrol edin.');
         continue;
       }
       const counts = new Map<string, { count: number; row: Advisory }>();
