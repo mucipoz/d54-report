@@ -1,38 +1,76 @@
 import { basename } from 'node:path';
 import ts from 'typescript';
 import type { Issue, SourceFile } from '../types.js';
-import { isScript, lineOf, report, scanLines, treeOf, walk } from './static-utils.js';
+import { isScript, isTestPath, lineOf, report, scanLines, treeOf, walk } from './static-utils.js';
 
 const credentialName = /(?:password|passwd|secret|token|api[_-]?key|private[_-]?key)$/i;
+const publicName = /^(?:NEXT_PUBLIC_|EXPO_PUBLIC_|VITE_|PUBLIC_)|public/i;
+const dotPath = /^[a-z][\w]*(?:\.[a-zA-Z]\w*)+$/;
 const sample = /^(?:[<{$*]|\.{2}|x{3,}|example|sample|demo|dummy|test|fake|fixture|placeholder|replace|change[-_]?me|your[-_]|redacted|none$|null$)/i;
 const knownCredential = /(?:\bAKIA[A-Z0-9]{16}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bxox[baprs]-[A-Za-z0-9-]{20,}\b|-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----)/;
+const settingAssignment = /(?:^|[\s{,])["']?([\w-]+)["']?\s*[:=]\s*(?:"([^"\n]+)"|'([^'\n]+)'|([^\s#,}]+))/g;
 
 function literalCredential(name: string, value: string): boolean {
-  return credentialName.test(name) && value.trim().length >= 6 && !sample.test(value.trim())
-    && !/^(?:https?:\/\/|process\.env\.|os\.(?:environ|getenv)|env\()/.test(value.trim());
+  const trimmed = value.trim();
+  return credentialName.test(name)
+    && !publicName.test(name)
+    && trimmed.length >= 6
+    && !sample.test(trimmed)
+    && !/^(?:https?:\/\/|process\.env\.|os\.(?:environ|getenv)|env\()/.test(trimmed)
+    && !trimmed.startsWith('pk.')
+    && !trimmed.endsWith('.apps.googleusercontent.com')
+    && !trimmed.startsWith('/')
+    && !/\s/.test(trimmed)
+    && !dotPath.test(trimmed);
+}
+
+export function maskSecrets(line: string): string {
+  let masked = line.replace(new RegExp(knownCredential.source, 'g'), '<gizli>');
+  masked = masked.replace(settingAssignment, (full, name: string, d?: string, s?: string, u?: string) => {
+    const value = d ?? s ?? u ?? '';
+    if (!literalCredential(name, value)) return full;
+    const idx = full.lastIndexOf(value);
+    return idx >= 0 ? full.slice(0, idx) + '<gizli>' + full.slice(idx + value.length) : full;
+  });
+  return masked;
 }
 
 export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
   const issues: Issue[] = [];
   const script = isScript(file.path);
+  const testFile = isTestPath(file.path);
+  const workflowFile = /(?:^|\/)\.github\/workflows\//.test(file.path.replace(/\\/g, '/'));
   const env = /^\.env(?:\.|$)/i.test(basename(file.path));
   const settings = env || /\.(?:json|ya?ml|toml|ini|properties|conf|py|php|rb|rs)$/i.test(file.path);
   const seen = new Set<string>();
+  let servicesIndent: number | undefined;
   const add = (line: number, rule: string, severity: Issue['severity'], title: string, evidence: string, impact: string, advice: string) => {
     const key = line + '/' + rule;
     if (!seen.has(key)) issues.push(report(file, line, 'security', rule, severity, title, evidence, impact, advice));
     seen.add(key);
   };
-  const secret = (line: number) => add(line, 'security.literal-secret', 'high', 'Kaynakta olası kimlik bilgisi',
+  const secret = (line: number, severity: Issue['severity'] = 'high') => add(
+    line, 'security.literal-secret', severity, 'Kaynakta olası kimlik bilgisi',
     'Bir kimlik bilgisi örüntüsü veya sabit hassas ayar değeri bulundu. Değer gizlendi.',
-    'Gerçek bir değer ise kaynak dosyaya erişen kişiler hesabı kullanabilir.', 'Değeri doğrulayın. Gerçekse anahtarı yenileyip bir gizli değer deposuna taşıyın.');
+    'Gerçek bir değer ise kaynak dosyaya erişen kişiler hesabı kullanabilir.',
+    'Değeri doğrulayın. Gerçekse anahtarı yenileyip bir gizli değer deposuna taşıyın.',
+  );
   scanLines(file, (line, number) => {
-    if (knownCredential.test(line)) secret(number);
+    let inServices = false;
+    if (workflowFile && line.trim() && !/^\s*#/.test(line)) {
+      const indent = line.search(/\S/);
+      if (servicesIndent !== undefined && indent <= servicesIndent) servicesIndent = undefined;
+      if (/^\s*services\s*:/.test(line)) servicesIndent = indent;
+      else if (servicesIndent !== undefined && indent > servicesIndent) inServices = true;
+    }
+    if (knownCredential.test(line)) secret(number, 'high');
     if (settings && !/^\s*[#;]/.test(line)) {
-      for (const match of line.matchAll(/(?:^|[\s{,])["']?([\w-]+)["']?\s*[:=]\s*(?:"([^"\n]+)"|'([^'\n]+)'|([^\s#,}]+))/g)) {
+      for (const match of line.matchAll(settingAssignment)) {
         const value = match[2] ?? match[3] ?? match[4] ?? '';
         if ((match[2] !== undefined || match[3] !== undefined || env || /\.(?:ya?ml|ini|properties|conf)$/i.test(file.path))
-            && literalCredential(match[1]!, value)) secret(number);
+            && literalCredential(match[1]!, value)) {
+          secret(number, testFile || inServices ? 'low' : 'high');
+        }
       }
     }
   });
@@ -59,7 +97,7 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
   walk(treeOf(file), node => {
     if ((ts.isVariableDeclaration(node) || ts.isPropertyAssignment(node)) && node.initializer
         && ts.isStringLiteralLike(node.initializer) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))
-        && literalCredential(node.name.text, node.initializer.text)) secret(lineOf(node));
+        && literalCredential(node.name.text, node.initializer.text)) secret(lineOf(node), testFile ? 'low' : 'high');
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : '';
