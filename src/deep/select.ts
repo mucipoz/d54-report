@@ -14,7 +14,7 @@ export const RISK_KEYWORDS = [
   'rpc', 'handler', 'route', 'api', 'webhook',
 ] as const;
 
-const CANDIDATE_EXT = /\.(?:tsx?|jsx?|mjs|cjs|py|php|rs)$/i;
+const CANDIDATE_EXT = /\.(?:tsx?|jsx?|mjs|cjs|py|php|rs|java|kt)$/i;
 const EXCLUDED_DIR = /(?:^|\/)(?:fixtures?|examples?|dist|build)(?:\/|$)/i;
 const VALID_REF_RE = /^[A-Za-z0-9._/~^-]{1,100}$/;
 

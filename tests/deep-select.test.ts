@@ -108,4 +108,18 @@ describe('deep/select', () => {
 
     await expect(selectFiles(files, repo, { limit: 8, since: '-bad' })).rejects.toThrow();
   });
+
+  it('includes .java and .kt source files as deep review candidates', async () => {
+    const javaPath = 'app/src/main/java/com/acme/Foo.java';
+    const ktPath = 'app/src/main/kotlin/com/acme/AuthService.kt';
+    const files: SourceFile[] = [
+      sf(javaPath, 'package com.acme;\npublic class Foo {}\n'),
+      sf(ktPath, 'package com.acme\nclass AuthService\n'),
+      sf('README.md', '# ignore\n'),
+    ];
+
+    const res = await selectFiles(files, temp, { limit: 8 });
+    expect(res.selected.map(f => f.path)).toEqual([ktPath, javaPath]);
+    expect(res.notes).toEqual([]);
+  });
 });

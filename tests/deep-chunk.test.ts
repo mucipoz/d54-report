@@ -129,4 +129,24 @@ describe('deep/chunk', () => {
       expect(block.text.length).toBeLessThanOrEqual(12_000);
     }
   });
+
+  it('splits .kt and .java files into 200-line windows using the non-TS path', () => {
+    const ktCode = Array.from({ length: 450 }, (_, i) => `val item${i} = ${i}`).join('\n');
+    const ktChunks = chunkFile(sf('app/src/main/kotlin/com/example/Main.kt', ktCode));
+    expect(ktChunks).toHaveLength(3);
+    expect(ktChunks.map(c => [c.start, c.end]).sort((a, b) => a[0]! - b[0]!)).toEqual([
+      [1, 200],
+      [201, 400],
+      [401, 450],
+    ]);
+    expect(ktChunks.map(c => c.name).sort()).toEqual(['pencere-1', 'pencere-2', 'pencere-3']);
+
+    const javaCode = Array.from({ length: 250 }, (_, i) => `int v${i} = ${i};`).join('\n');
+    const javaChunks = chunkFile(sf('app/src/main/java/com/example/Foo.java', javaCode));
+    expect(javaChunks).toHaveLength(2);
+    expect(javaChunks.map(c => [c.start, c.end]).sort((a, b) => a[0]! - b[0]!)).toEqual([
+      [1, 200],
+      [201, 250],
+    ]);
+  });
 });
