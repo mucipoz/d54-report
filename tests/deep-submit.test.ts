@@ -197,4 +197,36 @@ describe('deep/submit', () => {
     expect(res.report.findings).toHaveLength(1);
     expect(res.report.findings[0]!.id).toBe('SEC-001');
   });
+
+  it('rejects quotes shorter than 8 normalized chars or without alphanumeric characters', async () => {
+    await writeFile(
+      join(project, 'src/short.ts'),
+      'export function run() {\n  const a = 1;\n  return { a };\n}\n',
+    );
+    const prep = await prepareDeepReview(project, out, {});
+    const base = {
+      category: 'logic',
+      file: 'src/short.ts',
+      line: 3,
+      title: 'Kısa alıntı testi',
+      impact: 'Test etkisi.',
+      advice: 'Test önerisi.',
+      severity: 'medium',
+      verdict: 'confirmed',
+      reason: 'Test gerekçesi.',
+    };
+    const res = await submitDeepReview(project, out, prep.session, [
+      { ...base, quote: 'a' },
+      { ...base, quote: '}' },
+      { ...base, quote: '        ' },
+      { ...base, quote: ';;;;;;;;' },
+    ]);
+    expect(res.accepted).toBe(0);
+    expect(res.rejected).toEqual([
+      { index: 0, reason: 'alıntı çok kısa' },
+      { index: 1, reason: 'alıntı çok kısa' },
+      { index: 2, reason: 'alıntı çok kısa' },
+      { index: 3, reason: 'alıntı çok kısa' },
+    ]);
+  });
 });

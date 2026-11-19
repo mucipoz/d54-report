@@ -165,7 +165,11 @@ export async function submitDeepReview(
     }
 
     const normQuote = normalizeWs(item.quote);
-    if (!normQuote || !normalizeWs(currentLine).includes(normQuote)) {
+    if (normQuote.length < 8 || !/[\p{L}\p{N}]/u.test(normQuote)) {
+      rejected.push({ index, reason: 'alıntı çok kısa' });
+      continue;
+    }
+    if (!normalizeWs(currentLine).includes(normQuote)) {
       rejected.push({ index, reason: 'alıntı eşleşmiyor' });
       continue;
     }
