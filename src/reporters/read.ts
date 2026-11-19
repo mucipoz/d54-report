@@ -2,14 +2,16 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { z } from 'zod';
-import { categories, severities, type Report } from '../types.js';
+import { categories, severities, triageVerdicts, type Report } from '../types.js';
 
 export const findingId = z.string().regex(/^(?:SEC|UI|ERR|PERF|SPEC|BUG)-\d{3,}$/);
+export const triageSchema = z.object({ verdict: z.enum(triageVerdicts), reason: z.string() });
 export const findingSchema = z.object({
   id:findingId, rule:z.string(), category:z.enum(categories), severity:z.enum(severities), title:z.string(),
   file:z.string().optional(), line:z.number().int().positive().optional(), url:z.string().optional(),
   selector:z.string().optional(), viewport:z.string().optional(), screenshot:z.string().optional(),
-  evidence:z.string(), impact:z.string(), advice:z.string()
+  evidence:z.string(), impact:z.string(), advice:z.string(),
+  triage:triageSchema.optional()
 });
 const count = z.number().int().nonnegative();
 export const summarySchema = z.object({ total:count, health:count.max(100), counts:z.object({critical:count,high:count,medium:count,low:count}) });

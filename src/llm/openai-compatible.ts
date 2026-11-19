@@ -2,7 +2,8 @@ import type { LLMProvider } from './provider.js';
 import { post, type Connection } from './transport.js';
 
 export class OpenAICompatible implements LLMProvider {
-  constructor(private readonly config: Connection) {}
+  readonly model: string;
+  constructor(private readonly config: Connection) { this.model = config.model; }
   async complete(system: string, input: string) {
     const {base,key,model} = this.config;
     const result = await post(base, '/chat/completions', key ? {Authorization: 'Bearer ' + key} : {},
