@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
-import { categories, type Category, type Issue, type SourceFile } from '../types.js';
+import { categories, severities, type Category, type Issue, type SourceFile } from '../types.js';
 import { pathsOf } from './static-utils.js';
 import { prepareAudit } from './audit-input.js';
 import { hostToolPath } from '../fs-guards.js';
@@ -308,19 +308,33 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
         notes.push(label + ' geçerli danışmanlık sonucu vermedi. Araç kurulumu, kilit dosyası ve ağ erişimini kontrol edin.');
         continue;
       }
-      const counts = new Map<string, { count: number; row: Advisory }>();
+      const groups = new Map<string, Advisory[]>();
       for (const row of rows) {
-        const key = JSON.stringify([row.severity, row.dependency, row.id]);
-        const group = counts.get(key);
-        if (group) group.count++;
-        else counts.set(key, { count: 1, row });
+        const key = row.dependency || row.id;
+        const group = groups.get(key);
+        if (group) group.push(row);
+        else groups.set(key, [row]);
       }
-      for (const { count, row } of counts.values()) issues.push({ file: task.file, rule: 'security.advisory-' + task.audit,
-        category: 'security', severity: row.severity, title: ['Bağımlılık uyarısı', row.dependency, row.id].filter(Boolean).join(' '),
-        evidence: task.label + ' çıktısında ' + count + ' eşleşme bulundu.' + (row.id ? ' Kimlik ' + row.id + '.' : ''),
-        impact: 'Kullanılan bir bağımlılık bilinen güvenlik açığıyla ilişkilendirildi.',
-        advice: row.fixed ? 'Araç düzeltilmiş sürüm olarak ' + row.fixed + ' bildirdi. Uyumluluğu doğrulayıp bağımlılığı güncelleyin.'
-          : 'Araç çıktısındaki bağımlılık yolunu inceleyip düzeltilmiş sürüme güncelleyin.' });
+      for (const group of groups.values()) {
+        const topSeverity = group.reduce<Issue['severity']>(
+          (best, r) => severities.indexOf(r.severity) < severities.indexOf(best) ? r.severity : best,
+          group[0]!.severity
+        );
+        const dependency = group.find(r => r.dependency)?.dependency ?? '';
+        const representative = [...new Set(group.filter(r => r.severity === topSeverity && r.id).map(r => r.id))].sort()[0];
+        const ids = [...new Set(group.map(r => r.id).filter(Boolean))].sort();
+        const fixed = group.find(r => r.fixed)?.fixed;
+        const idList = ids.length
+          ? ' Kimlikler: ' + ids.slice(0, 10).join(', ') + (ids.length > 10 ? ' +' + (ids.length - 10) : '')
+          : '';
+        issues.push({ file: task.file, rule: 'security.advisory-' + task.audit,
+          category: 'security', severity: topSeverity,
+          title: ['Bağımlılık uyarısı', dependency, representative].filter(Boolean).join(' ') + (ids.length > 1 ? ' (+' + (ids.length - 1) + ')' : ''),
+          evidence: task.label + ' çıktısında ' + group.length + ' eşleşme bulundu.' + idList,
+          impact: 'Kullanılan bir bağımlılık bilinen güvenlik açığıyla ilişkilendirildi.',
+          advice: fixed ? 'Araç düzeltilmiş sürüm olarak ' + fixed + ' bildirdi. Uyumluluğu doğrulayıp bağımlılığı güncelleyin.'
+            : 'Araç çıktısındaki bağımlılık yolunu inceleyip düzeltilmiş sürüme güncelleyin.' });
+      }
       notes.push(label + ' tamamlandı. Bildirilen eşleşme sayısı ' + rows.length + '.');
       entry.complete = true;
     } else if (result.code === 0) {
