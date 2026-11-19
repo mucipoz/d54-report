@@ -61,7 +61,42 @@ describe('report contract', () => {
     expect(empty.summary.health).toBe(100);
     expect(empty.priority).toEqual([]);
     expect(markdown(empty)).toContain('bulgu çıkmadı');
-    const many = Array.from({ length: 12 }, (_, line) => issue({ severity: 'critical', line: line + 1 }));
+    const many = [
+      ...Array.from({ length: 5 }, (_, line) => issue({ severity: 'critical', line: line + 1 })),
+      ...Array.from({ length: 10 }, (_, line) => issue({ severity: 'high', line: line + 10 })),
+      ...Array.from({ length: 10 }, (_, line) => issue({ severity: 'medium', line: line + 100 })),
+      ...Array.from({ length: 20 }, (_, line) => issue({ severity: 'low', line: line + 1000 })),
+    ];
     expect(makeReport(target, [], 1, many, [], date).summary.health).toBe(0);
+  });
+
+  it('applies per-severity penalty caps to health calculation', () => {
+    // 5000 low only → health 90
+    const lowOnly = Array.from({ length: 5000 }, (_, i) => issue({ severity: 'low', line: i + 1 }));
+    expect(makeReport(target, [], 1, lowOnly, [], date).summary.health).toBe(90);
+
+    // 1 critical + 146 high + 298 medium + 4447 low → health 25 (100 - 15 - 30 - 20 - 10)
+    const mixed = [
+      issue({ severity: 'critical', line: 1 }),
+      ...Array.from({ length: 146 }, (_, i) => issue({ severity: 'high', line: i + 2 })),
+      ...Array.from({ length: 298 }, (_, i) => issue({ severity: 'medium', line: i + 150 })),
+      ...Array.from({ length: 4447 }, (_, i) => issue({ severity: 'low', line: i + 500 })),
+    ];
+    expect(makeReport(target, [], 1, mixed, [], date).summary.health).toBe(25);
+
+    // 2 high → 86
+    const twoHigh = [
+      issue({ severity: 'high', line: 1 }),
+      issue({ severity: 'high', line: 2 }),
+    ];
+    expect(makeReport(target, [], 1, twoHigh, [], date).summary.health).toBe(86);
+
+    // 3 critical → 60
+    const threeCritical = [
+      issue({ severity: 'critical', line: 1 }),
+      issue({ severity: 'critical', line: 2 }),
+      issue({ severity: 'critical', line: 3 }),
+    ];
+    expect(makeReport(target, [], 1, threeCritical, [], date).summary.health).toBe(60);
   });
 });
