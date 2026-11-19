@@ -202,7 +202,7 @@ Tarama motoru, gereksiz uyarıları önlemek ve gürültüyü azaltmak için ba�
 
 - **Genel anahtarlar ve istemci değerleri:** `NEXT_PUBLIC_`, `EXPO_PUBLIC_`, `VITE_` veya `PUBLIC_` önekli değişkenler ile adında "public" geçen değerler atlanır. `pk.` ile başlayan veya `.apps.googleusercontent.com` ile biten istemci anahtarları yoksayılır.
 - **Yol ve metin filtreleri:** `/` ile başlayan yollar, boşluk içeren dizgiler ve en çok 60 karakterlik harf-nokta yolları (ör. `users.verifyEmailToken`) kimlik bilgisi kabul edilmez.
-- **Test ve CI ortamları:** Test/fixture dosyaları ve CI yapılandırmalarındaki `services:` bloklarında bulunan kimlik bilgileri `low` seviyesine indirilir.
+- **Test ve CI ortamları:** Test/fixture dosyaları ve GitHub Actions iş akışlarındaki (`.github/workflows/`) `services:` bloklarında bulunan kimlik bilgileri `low` seviyesine indirilir.
 - **Tanınan anahtarlar:** AWS, GitHub, Slack anahtarları veya özel anahtar (`PRIVATE KEY`) blokları gibi bilinen biçimler her zaman `high` önem derecesindedir.
 - **Servis hesabı JSON dosyaları:** Git tarafından izleniyorsa `critical`, `.gitignore` ile dışlanmışsa `low` olarak işaretlenir.
 - **SQL sorguları:** Şablon içindeki tüm `${}` ifadeleri güvenli/izinli sabitlerden oluşuyor ve değerler sorguya parametre dizisiyle aktarılıyorsa `low`, aksi durumda `high` atanır.
@@ -235,10 +235,12 @@ Hedef proje kökündeki `.d54report-ignore` dosyasıyla bilinen veya beklenen bu
 
 > **Uyarı:** Güvenilmeyen bir depoyu tararken o depo kendi bulgularını bu dosyayla gizleyebilir; raporlanan bastırılan bulgu sayısını mutlaka inceleyin.
 
+Kural kimliği JSON raporundaki `rule` alanındadır.
+
 **Örnek satırlar:**
 ```text
-hardcoded-credential tests/fixtures/** # Test senaryolarında kullanılan sahte anahtarlar
-sql-injection src/legacy/query.ts:45 # Tablo adı allowlist doğrulamalı sabit metindir
+security.literal-secret tests/fixtures/** # Test senaryolarında kullanılan sahte anahtarlar
+security.sql-construction src/legacy/query.ts:45 # Tablo adı allowlist doğrulamalı sabit metindir
 * docs/examples/* # Belgelerdeki sözde kod örnekleri
 ```
 
