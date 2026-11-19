@@ -260,28 +260,63 @@ describe('deep/submit', () => {
     expect(second.report.findings.filter(f => f.rule === 'review.deep.authz')).toHaveLength(1);
   });
 
-  it('rejects findings whose quote matches the sensitive pattern', async () => {
+  it('accepts authz line containing token identifier in quote', async () => {
     await writeFile(
-      join(project, 'src/reset.ts'),
-      'export function resetFlow(u: { ok: boolean }) {\n  return verifyPasswordReset(u.ok);\n}\n',
+      join(project, 'src/guard.ts'),
+      "export function guard(token: { role: string }) {\n  if (token.role !== 'admin') {\n    return false;\n  }\n  return true;\n}\n",
     );
     const prep = await prepareDeepReview(project, out, {});
     const res = await submitDeepReview(project, out, prep.session, [
       {
         category: 'authz',
-        file: 'src/reset.ts',
+        file: 'src/guard.ts',
         line: 2,
-        quote: 'return verifyPasswordReset(u.ok);',
-        title: 'Sıfırlama kontrolü zayıf',
-        impact: 'Yetkisiz sıfırlama yapılabilir.',
-        advice: 'Ek doğrulama ekleyin.',
+        quote: "if (token.role !== 'admin') {",
+        title: 'Rol kontrolü katı eşitlikle sınırlandırılmış',
+        impact: 'Yetki kontrolü yanlış rollere izin verebilir.',
+        advice: 'İzin tabanlı merkezi yetki denetimi kullanın.',
         severity: 'high',
         verdict: 'confirmed',
-        reason: 'Kontrol sadece tek alana bakıyor.',
+        reason: 'Doğrudan rol dizesi karşılaştırılıyor.',
+      },
+    ]);
+    expect(res.accepted).toBe(1);
+    expect(res.rejected).toEqual([]);
+  });
+
+  it('rejects findings whose quote contains a real secret (JWT or AWS key)', async () => {
+    await writeFile(
+      join(project, 'src/leak.ts'),
+      "export const aws = 'AKIA1234567890ABCDEF';\nexport const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';\n",
+    );
+    const prep = await prepareDeepReview(project, out, {});
+    const res = await submitDeepReview(project, out, prep.session, [
+      {
+        category: 'authz',
+        file: 'src/leak.ts',
+        line: 1,
+        quote: "export const aws = 'AKIA1234567890ABCDEF';",
+        title: 'Sabit anahtar gömülü',
+        impact: 'Yetkisiz erişim riski doğar.',
+        advice: 'Anahtarı ortam değişkenine taşıyın.',
+        severity: 'high',
+        verdict: 'confirmed',
+        reason: 'Kaynak kodda sabit anahtar bulunuyor.',
+      },
+      {
+        category: 'authz',
+        file: 'src/leak.ts',
+        line: 2,
+        quote: "export const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';",
+        title: 'Sabit belirteç gömülü',
+        impact: 'Oturum ele geçirilebilir.',
+        advice: 'Belirteci çalışma zamanında üretin.',
+        severity: 'high',
+        verdict: 'confirmed',
+        reason: 'Kaynak kodda sabit belirteç bulunuyor.',
       },
     ]);
     expect(res.accepted).toBe(0);
-    expect(res.rejected).toHaveLength(1);
-    expect(res.rejected[0]!.reason).toContain('sır deseni');
+    expect(res.rejected).toHaveLength(2);
   });
 });

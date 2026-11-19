@@ -189,7 +189,7 @@ export async function submitDeepReview(
       rejected.push({ index, reason: 'metin boş veya çok uzun' });
       continue;
     }
-    if (sensitive.test(item.quote) || prose.some(t => sensitive.test(t))) {
+    if (deepSensitive(item.quote) || prose.some(t => sensitive.test(t))) {
       rejected.push({ index, reason: 'metin sır deseni içeriyor' });
       continue;
     }
