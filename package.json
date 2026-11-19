@@ -1,0 +1,45 @@
+{
+  "name": "d54-report",
+  "version": "0.1.0",
+  "description": "Local-first software audit CLI with reviewable, verified fixes",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "d54-report": "./dist/cli.js",
+    "d54-report-mcp": "./dist/mcp-server.js"
+  },
+  "files": [
+    "dist",
+    "AGENT.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "SKILL.md",
+    "templates",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "commander": "^13.1.0",
+    "dotenv": "^16.6.1",
+    "playwright": "^1.56.1",
+    "smol-toml": "^1.9.1",
+    "typescript": "~5.9.3",
+    "yaml": "^2.9.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "vitest": "^3.2.6"
+  }
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Yerel saat · D54 örnek uygulama</title>
+  <meta name="description" content="Tarayıcının yerel saatini ve saat dilimini gösteren D54 denetim örneği.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Yerel saat</h1>
+      <nav aria-label="Saat görünümleri">
+        <a href="#saat">Saat</a>
+        <a href="#dilim" target="_blank">Saat dilimi</a>
+      </nav>
+    </header>
+    <section id="saat" aria-labelledby="baslik">
+      <h2 id="baslik">Şu an</h2>
+      <time id="clock"></time>
+      <p id="dilim"></p>
+    </section>
+  </main>
+</body>
+</html>

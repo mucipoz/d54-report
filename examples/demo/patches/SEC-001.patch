@@ -1,0 +1,12 @@
+diff --git a/index.html b/index.html
+--- a/index.html
++++ b/index.html
+@@ -15,7 +15,7 @@
+       <h1>Yerel saat</h1>
+       <nav aria-label="Saat görünümleri">
+         <a href="#saat">Saat</a>
+-        <a href="#dilim" target="_blank">Saat dilimi</a>
++        <a href="#dilim" target="_blank" rel="noopener noreferrer">Saat dilimi</a>
+       </nav>
+     </header>
+     <section id="saat" aria-labelledby="baslik">

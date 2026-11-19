@@ -1,0 +1,111 @@
+name: D54 Report
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      fail-on-critical:
+        type: boolean
+        default: true
+        description: Fail when critical findings exist
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      counts: ${{ steps.summary.outputs.counts }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: target
+          persist-credentials: false
+      - name: Validate pinned scanner revision
+        env:
+          ENGINE: ${{ vars.D54_REPORT_REPOSITORY }}
+          REV: ${{ vars.D54_REPORT_REF }}
+        run: |
+          test -n "$ENGINE"
+          [[ "$REV" =~ ^[0-9a-fA-F]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          path: engine
+          repository: ${{ vars.D54_REPORT_REPOSITORY }}
+          ref: ${{ vars.D54_REPORT_REF }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build the audit CLI
+        working-directory: engine
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          npx --no-install playwright install --with-deps chromium
+      - name: Scan
+        id: audit
+        continue-on-error: true
+        working-directory: engine
+        env:
+          D54_API_KEY: ${{ github.event_name != 'pull_request' && secrets.D54_API_KEY || '' }}
+          D54_PROVIDER: ${{ vars.D54_PROVIDER }}
+          D54_MODEL: ${{ vars.D54_MODEL }}
+          D54_BASE_URL: ${{ vars.D54_BASE_URL }}
+        shell: bash
+        run: |
+          flags=(--no-llm)
+          if [[ -n "$D54_API_KEY" && -n "$D54_PROVIDER" && -n "$D54_MODEL" ]]; then flags=(); fi
+          node dist/cli.js scan "${flags[@]}" --path ../target --out ../reports
+      - id: summary
+        name: Export numeric summary
+        shell: bash
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
+          import { readdirSync, readFileSync } from 'node:fs';
+          const path = readdirSync('reports').find(n => /^d54-report-.*\.json$/.test(n));
+          const { summary: { counts, health } } = JSON.parse(readFileSync('reports/' + path, 'utf8'));
+          const numbers = [counts.critical, counts.high, counts.medium, counts.low, health];
+          if (!numbers.every(n => Number.isSafeInteger(n) && n >= 0)) process.exit(1);
+          console.log('counts=' + JSON.stringify(numbers));
+          JS
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: d54-report
+          path: reports/
+          if-no-files-found: error
+      - name: Enforce scan completion
+        if: ${{ steps.audit.outcome == 'failure' }}
+        run: exit 1
+      - name: Enforce critical threshold
+        if: ${{ steps.summary.outputs.counts && fromJSON(steps.summary.outputs.counts)[0] > 0 && (github.event_name == 'workflow_dispatch' && inputs['fail-on-critical'] || github.event_name != 'workflow_dispatch' && vars.D54_FAIL_ON_CRITICAL != 'false') }}
+        run: exit 2
+  fork-summary:
+    name: D54 counts ${{ needs.scan.outputs.counts }}
+    needs: scan
+    if: ${{ always() && github.event_name == 'pull_request' && needs.scan.outputs.counts != '' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: echo 'Numeric summary available'
+  comment:
+    needs: scan
+    if: ${{ always() && github.event_name == 'pull_request' && needs.scan.outputs.counts != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          COUNTS: ${{ needs.scan.outputs.counts }}
+        with:
+          script: |
+            const [critical,high,medium,low,health] = JSON.parse(process.env.COUNTS)
+            const marker = '<!-- d54-report -->'
+            const body = [marker,'## D54 Report','','| Critical | High | Medium | Low | Health |','| ---: | ---: | ---: | ---: | ---: |',`| ${critical} | ${high} | ${medium} | ${low} | ${health}/100 |`].join('\n')
+            const args = { ...context.repo, issue_number: context.issue.number }
+            const comments = await github.paginate(github.rest.issues.listComments, {...args,per_page:100})
+            const prev = comments.find(c => c.user?.login === 'github-actions[bot]' && c.body?.startsWith(marker))
+            if (prev) await github.rest.issues.updateComment({...context.repo,comment_id:prev.id,body})
+            else await github.rest.issues.createComment({...args,body})

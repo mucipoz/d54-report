@@ -1,0 +1,67 @@
+import { describe, expect, it } from 'vitest';
+import { json, makeReport } from '../src/reporters/json.js';
+import { markdown } from '../src/reporters/markdown.js';
+import type { Issue } from '../src/types.js';
+
+const target = { project: 'örnek', root: '/example' };
+const date = '2026-01-02T03:04:05.000Z';
+const issue = (changes: Partial<Issue> = {}): Issue => ({
+  rule: 'errors.sample', category: 'errors', severity: 'low',
+  title: 'Örnek bulgu', evidence: 'Ölçüm', impact: 'Etki', advice: 'Düzeltin.',
+  file: 'app.ts', line: 1, ...changes,
+});
+
+describe('report contract', () => {
+  it('deduplicates, sorts and assigns stable category IDs across input orders', () => {
+    const findings = [
+      issue({ line: 11 }), issue({ line: 2 }), issue({ line: 2 }),
+      issue({ category: 'security', severity: 'critical' }),
+      issue({ category: 'performance', severity: 'medium' }),
+      issue({ category: 'bugs', severity: 'high' }),
+      issue({ category: 'specialized', severity: 'low' }),
+    ];
+    const build = (items: Issue[]) => makeReport(target, ['TypeScript'], 2, items, ['statik', 'statik'], date);
+    const report = build(findings);
+    expect(JSON.parse(json(report))).toEqual(report);
+    expect(report).toEqual(build([...findings].reverse()));
+    expect(report).toMatchObject({
+      schemaVersion: 1, target, createdAt: date, stack: ['TypeScript'], filesScanned: 2,
+      coverage: ['statik'],
+      summary: { total: 6, counts: { critical: 1, high: 1, medium: 1, low: 3 }, health: 72 },
+    });
+    expect(report.findings.map(f => f.id)).toEqual(['SEC-001', 'BUG-001', 'PERF-001', 'ERR-001', 'ERR-002', 'SPEC-001']);
+    expect(report.findings.filter(f => f.category === 'errors').map(f => f.line)).toEqual([2, 11]);
+    expect(report.priority).toEqual(report.findings.slice(0, 5).map(f => f.id));
+    const actions = markdown(report).split('## Öncelikli aksiyon planı')[1];
+    expect(actions.match(/^\d+\. /gm)).toHaveLength(5);
+    for (const [i, id] of report.priority.entries()) expect(actions).toContain((i + 1) + '. **' + id + '**');
+  });
+
+  it('preserves distinct viewport findings and links only portable screenshot paths', () => {
+    const visual = issue({ file: undefined, line: undefined, url: 'https://example.test/',
+      category: 'ui', rule: 'ui.overlap', viewport: 'mobile', selector: 'nav > a',
+      title: '<b>başlık</b>\n# Yeni başlık', evidence: 'sol | sağ', screenshot: 'screenshots/mobile.png' });
+    const report = makeReport(target, [], 0, [
+      visual, { ...visual, viewport: 'desktop', screenshot: 'screenshots/../outside.png' },
+      { ...visual, viewport: 'tablet', screenshot: 'https://example.test/remote.png' },
+    ], [], date);
+    expect(report.findings).toHaveLength(3);
+    const md = markdown(report);
+    expect(md).toContain('&lt;b&gt;başlık&lt;/b&gt;');
+    expect(md).not.toContain('\n# Yeni başlık');
+    expect(md).toContain('sol \\| sağ');
+    expect(md).toContain('[Ekran görüntüsü](screenshots/mobile.png)');
+    expect(md).not.toContain('outside.png');
+    expect(md).not.toContain('remote.png');
+    for (const f of report.findings) expect(md).toContain(f.id);
+  });
+
+  it('bounds health and handles empty reports', () => {
+    const empty = makeReport(target, [], 0, [], [], date);
+    expect(empty.summary.health).toBe(100);
+    expect(empty.priority).toEqual([]);
+    expect(markdown(empty)).toContain('bulgu çıkmadı');
+    const many = Array.from({ length: 12 }, (_, line) => issue({ severity: 'critical', line: line + 1 }));
+    expect(makeReport(target, [], 1, many, [], date).summary.health).toBe(0);
+  });
+});

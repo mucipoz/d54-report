@@ -1,0 +1,11 @@
+node_modules/
+dist/
+reports/
+.env
+.env.*
+!.env.example
+coverage/
+*.tsbuildinfo
+.DS_Store
+!package-lock.json
+!demo-app/package-lock.json

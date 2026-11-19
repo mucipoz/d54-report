@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-11-19T05:38:48.161Z",
+  "target": {
+    "project": "demo-app",
+    "root": "/home/mcp/d54-report/demo-app"
+  },
+  "stack": [
+    "HTML",
+    "JavaScript/Node.js"
+  ],
+  "filesScanned": 8,
+  "coverage": [
+    "Seçilen tarama modülleri: errors, security, performance, ui, bugs, specialized.",
+    "Bağımlılık denetimi geçici dizinlerde çalışır. Paket adları ve sabit sürümler genel danışmanlık hizmetlerinde sorgulanabilir.",
+    "package.json — npm audit tamamlandı. Bildirilen eşleşme sayısı 0.",
+    "package.json — npm build başarılı.",
+    "Statik kurallar yerel kaynak ve yapılandırmaları inceledi. Örüntü bulguları kod incelemesine yön verir.",
+    "Yerel uygulama geçici portta başlatıldı. Tarayıcı ölçümü bu geliştirme sunucusuna aittir.",
+    "desktop 1440×900 · LCP 104 ms",
+    "desktop 1440×900 · CLS 0",
+    "desktop 1440×900 · TTFB 11.4 ms",
+    "desktop 1440×900 · 10 DOM öğesi incelendi, 0 ek örnek rapor sınırını aştı.",
+    "tablet 768×1024 · LCP 48 ms",
+    "tablet 768×1024 · CLS 0",
+    "tablet 768×1024 · TTFB 4.4 ms",
+    "tablet 768×1024 · 10 DOM öğesi incelendi, 0 ek örnek rapor sınırını aştı.",
+    "mobile 390×844 · LCP 40 ms",
+    "mobile 390×844 · CLS 0",
+    "mobile 390×844 · TTFB 4.8 ms",
+    "mobile 390×844 · 10 DOM öğesi incelendi, 0 ek örnek rapor sınırını aştı.",
+    "Her boyutta bir adres açıldı. İlk görünümde en çok 3000 DOM öğesi ve 180 etkileşim/metin kutusu örneklendi. Her kural için en çok üç bölge kaydedildi. Form, giriş, kaydırma, iframe içeriği ve Shadow DOM incelenmedi. Performans değerleri kısa bir laboratuvar gözlemidir.",
+    "AI incelemesi çalışmadı."
+  ],
+  "summary": {
+    "total": 6,
+    "counts": {
+      "critical": 0,
+      "high": 0,
+      "medium": 4,
+      "low": 2
+    },
+    "health": 86
+  },
+  "findings": [
+    {
+      "file": "app.js",
+      "line": 20,
+      "category": "performance",
+      "rule": "performance.lifecycle-setInterval",
+      "severity": "medium",
+      "title": "Kaynağın yaşam döngüsünü inceleyin",
+      "evidence": "setInterval çağrısı bulundu. Dosyada clearInterval çağrısı görülmedi.",
+      "impact": "Tekrarlanan kurulumlar etkin kaynakları biriktirebilir.",
+      "advice": "Sahipliği takip edip bileşen kapanışında clearInterval veya eşdeğer temizliği doğrulayın.",
+      "id": "PERF-001"
+    },
+    {
+      "url": "http://127.0.0.1:37215/",
+      "viewport": "desktop 1440×900",
+      "title": "İçerik bölgeleri üst üste biniyor",
+      "severity": "medium",
+      "impact": "Kesişen içerik okunamayabilir veya yanlış kontrol seçilebilir.",
+      "advice": "İki seçicinin kutularını inceleyip boşluk ve hizalamayı düzeltin.",
+      "category": "ui",
+      "rule": "ui.overlap",
+      "selector": "html:nth-of-type(1) > body:nth-of-type(1) > main:nth-of-type(1) > header:nth-of-type(1) > nav:nth-of-type(1) > a:nth-of-type(1)",
+      "evidence": "html:nth-of-type(1) > body:nth-of-type(1) > main:nth-of-type(1) > header:nth-of-type(1) > nav:nth-of-type(1) > a:nth-of-type(2) ile 24×40 px kesişme.",
+      "screenshot": "screenshots/d9915432-32ca-4cfa-89f9-78603a0eba3e-desktop-overlap-1.png",
+      "id": "UI-001"
+    },
+    {
+      "url": "http://127.0.0.1:37215/",
+      "viewport": "mobile 390×844",
+      "title": "İçerik bölgeleri üst üste biniyor",
+      "severity": "medium",
+      "impact": "Kesişen içerik okunamayabilir veya yanlış kontrol seçilebilir.",
+      "advice": "İki seçicinin kutularını inceleyip boşluk ve hizalamayı düzeltin.",
+      "category": "ui",
+      "rule": "ui.overlap",
+      "selector": "html:nth-of-type(1) > body:nth-of-type(1) > main:nth-of-type(1) > header:nth-of-type(1) > nav:nth-of-type(1) > a:nth-of-type(1)",
+      "evidence": "html:nth-of-type(1) > body:nth-of-type(1) > main:nth-of-type(1) > header:nth-of-type(1) > nav:nth-of-type(1) > a:nth-of-type(2) ile 24×40 px kesişme.",
+      "screenshot": "screenshots/d9915432-32ca-4cfa-89f9-78603a0eba3e-mobile-overlap-1.png",
+      "id": "UI-002"
+    },
+    {
+      "url": "http://127.0.0.1:37215/",
+      "viewport": "tablet 768×1024",
+      "title": "İçerik bölgeleri üst üste biniyor",
+      "severity": "medium",
+      "impact": "Kesişen içerik okunamayabilir veya yanlış kontrol seçilebilir.",
+      "advice": "İki seçicinin kutularını inceleyip boşluk ve hizalamayı düzeltin.",
+      "category": "ui",
+      "rule": "ui.overlap",
+      "selector": "html:nth-of-type(1) > body:nth-of-type(1) > main:nth-of-type(1) > header:nth-of-type(1) > nav:nth-of-type(1) > a:nth-of-type(1)",
+      "evidence": "html:nth-of-type(1) > body:nth-of-type(1) > main:nth-of-type(1) > header:nth-of-type(1) > nav:nth-of-type(1) > a:nth-of-type(2) ile 24×40 px kesişme.",
+      "screenshot": "screenshots/d9915432-32ca-4cfa-89f9-78603a0eba3e-tablet-overlap-1.png",
+      "id": "UI-003"
+    },
+    {
+      "file": "build.mjs",
+      "line": 9,
+      "category": "performance",
+      "rule": "performance.await-loop",
+      "severity": "low",
+      "title": "Döngü her işlem için bekliyor",
+      "evidence": "Döngü içinde await kullanılmış.",
+      "impact": "Birbirinden bağımsız işlemler seri çalıştığında toplam süre uzayabilir.",
+      "advice": "İşlem sırasını ve hız sınırlarını kontrol edin. Bağımsız işler için sınırlı eşzamanlılığı değerlendirin.",
+      "id": "PERF-002"
+    },
+    {
+      "file": "index.html",
+      "line": 18,
+      "category": "security",
+      "rule": "security.target-blank",
+      "severity": "low",
+      "title": "Yeni sekme bağlantısında ilişki açık belirtilmemiş",
+      "evidence": "Hedef _blank. Rel içinde noopener veya noreferrer bulunamadı.",
+      "impact": "Örtük koruması olmayan istemciler açan pencereye erişim verebilir.",
+      "advice": "Bağlantının rel özniteliğine noopener ekleyin.",
+      "id": "SEC-001"
+    }
+  ],
+  "priority": [
+    "PERF-001",
+    "UI-001",
+    "UI-002",
+    "UI-003",
+    "PERF-002"
+  ],
+  "modules": [
+    "errors",
+    "security",
+    "performance",
+    "ui",
+    "bugs",
+    "specialized"
+  ]
+}

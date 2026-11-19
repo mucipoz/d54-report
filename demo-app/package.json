@@ -1,0 +1,11 @@
+{
+  "name": "d54-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test app.test.mjs",
+    "start": "node server.mjs"
+  }
+}
