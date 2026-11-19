@@ -4,7 +4,7 @@ import type { SourceFile } from './types.js';
 import { readBoundedFile } from './fs-guards.js';
 
 const ignored = new Set(['.git', '.hg', '.svn', 'node_modules', 'target', 'dist', 'build', '.next', '.nuxt', 'out', 'reports', 'coverage', 'vendor', '.venv', 'venv', '__pycache__', '.cache', '.gradle', '.dart_tool', '.idea']);
-const sourceExt = /^(?:\.[cm]?[jt]sx?|\.pyi?|\.rs|\.php|\.html?|\.css|\.scss|\.vue|\.svelte|\.jsonc?|\.toml|\.ya?ml|\.txt|\.ini|\.xml|\.sql|\.lock|\.env|\.pem|\.key)$/i;
+const sourceExt = /^(?:\.[cm]?[jt]sx?|\.pyi?|\.rs|\.php|\.java|\.kt|\.html?|\.css|\.scss|\.vue|\.svelte|\.jsonc?|\.toml|\.ya?ml|\.txt|\.ini|\.xml|\.sql|\.lock|\.env|\.pem|\.key)$/i;
 const assetExt = /\.(?:png|jpe?g|webp|avif|gif|svg|woff2?|ttf|ico|gltf|glb)$/i;
 const lock = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|composer\.lock|poetry\.lock)$/;
 const MAX_SOURCE_FILE_BYTES = 4 * 1024 * 1024;

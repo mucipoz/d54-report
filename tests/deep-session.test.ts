@@ -107,4 +107,13 @@ describe('deep/session', () => {
       expect(text.length).toBeLessThanOrEqual(12_000);
     }
   });
+
+  it('includes .java and .kt files in prepareDeepReview selection', async () => {
+    await writeFile(join(project, 'src/Svc.java'), 'public class Svc { public int run() { return 1; } }\n');
+    await writeFile(join(project, 'src/Auth.kt'), 'class Auth { fun ok(): Boolean = true }\n');
+
+    const res = await prepareDeepReview(project, out, {});
+    expect(res.summary.files).toContain('src/Svc.java');
+    expect(res.summary.files).toContain('src/Auth.kt');
+  });
 });
