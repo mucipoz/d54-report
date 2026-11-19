@@ -80,7 +80,13 @@ it('serves scan, report and verified patch operations over clean JSON-RPC stdio'
     });
     await client.connect(transport);
     const catalog = await client.listTools();
-    expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['d54_fix_findings', 'd54_get_report', 'd54_scan_project']);
+    expect(catalog.tools.map(tool => tool.name).sort()).toEqual([
+      'd54_deep_review_prepare',
+      'd54_deep_review_submit',
+      'd54_fix_findings',
+      'd54_get_report',
+      'd54_scan_project',
+    ]);
     const call = (name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args });
     const scan = await call('d54_scan_project', { path: project, modules: ['security', 'performance'] });
     expect(scan.isError, JSON.stringify(scan.content)).not.toBe(true);
@@ -263,6 +269,128 @@ it('triage requires llm in MCP d54_scan_project', async () => {
       const text = (scan.content as { type: string; text: string }[])[0]!.text;
       expect(text).toContain('use_llm');
     });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it('serves d54_deep_review_prepare and d54_deep_review_submit via MCP and CLI, rejecting invalid session IDs', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-deep-'));
+  try {
+    await mkdir(join(temp, 'src/auth'), { recursive: true });
+    await writeFile(
+      join(temp, 'src/auth/login.ts'),
+      [
+        'export function verifyRole(role: string) {',
+        '  if (role !== "admin") {',
+        '    return { allowed: true };',
+        '  }',
+        '  return { allowed: false };',
+        '}',
+      ].join('\n') + '\n',
+    );
+
+    await withMcpClient(temp, async client => {
+      const badSubmit = await client.callTool({
+        name: 'd54_deep_review_submit',
+        arguments: { path: temp, session: '../bad', findings: [] },
+      });
+      expect(badSubmit.isError).toBe(true);
+
+      const missingSubmit = await client.callTool({
+        name: 'd54_deep_review_submit',
+        arguments: { path: temp, session: '0123456789abcdef', findings: [] },
+      });
+      expect(missingSubmit.isError).toBe(true);
+
+      const prep = await client.callTool({
+        name: 'd54_deep_review_prepare',
+        arguments: { path: temp, deep_files: 4, max_chunks: 10 },
+      });
+      expect(prep.isError, JSON.stringify(prep.content)).not.toBe(true);
+      const prepData = prep.structuredContent as {
+        session: string;
+        chunk_files: string[];
+        summary: { files: string[]; chunks: number; skippedMasked: number; notes: string[] };
+        instructions: string;
+      };
+      expect(prepData.session).toMatch(/^[a-f0-9]{16}$/);
+      expect(prepData.chunk_files.length).toBeGreaterThanOrEqual(1);
+      expect(prepData.summary.files).toEqual(['src/auth/login.ts']);
+
+      const sub = await client.callTool({
+        name: 'd54_deep_review_submit',
+        arguments: {
+          path: temp,
+          session: prepData.session,
+          findings: [
+            {
+              category: 'authz',
+              file: 'src/auth/login.ts',
+              line: 3,
+              quote: 'return { allowed: true };',
+              title: 'Admin olmayan role izin veriliyor',
+              impact: 'Yetkisiz erişim açığı.',
+              advice: 'role !== "admin" durumunda allowed: false döndürün.',
+              severity: 'critical',
+              verdict: 'confirmed',
+              reason: 'Koşul ters kurulmuş.',
+            },
+          ],
+          uncertain: 1,
+          rejected: 2,
+        },
+      });
+      expect(sub.isError, JSON.stringify(sub.content)).not.toBe(true);
+      const subData = sub.structuredContent as {
+        accepted: number;
+        rejected: { index: number; reason: string }[];
+        summary: Report['summary'];
+        report_paths: { markdown: string; json: string };
+      };
+      expect(subData.accepted).toBe(1);
+      expect(subData.rejected).toEqual([]);
+      expect(subData.summary.counts.critical).toBe(1);
+      expect(subData.report_paths.json).toMatch(/\.json$/);
+    });
+
+    // CLI deep prepare & deep submit JSON output check
+    const cliOut = join(temp, 'cli-reports');
+    const { stdout: prepStdout } = await execFileAsync(
+      process.execPath,
+      [join(repo, 'dist/cli.js'), 'deep', 'prepare', '--path', temp, '--out', cliOut, '--files', '3', '--max-chunks', '10'],
+      { cwd: temp },
+    );
+    const cliPrep = JSON.parse(prepStdout) as { session: string; chunkFiles: string[] };
+    expect(cliPrep.session).toMatch(/^[a-f0-9]{16}$/);
+    expect(cliPrep.chunkFiles.length).toBeGreaterThanOrEqual(1);
+
+    const findingsFile = join(temp, 'findings.json');
+    await writeFile(
+      findingsFile,
+      JSON.stringify([
+        {
+          category: 'authz',
+          file: 'src/auth/login.ts',
+          line: 3,
+          quote: 'return { allowed: true };',
+          title: 'CLI üzerinden doğrulanan yetki hatası',
+          impact: 'Yetkisiz işlem.',
+          advice: 'Koşulu düzeltin.',
+          severity: 'high',
+          verdict: 'confirmed',
+          reason: 'Birebir doğrulandı.',
+        },
+      ]),
+    );
+    const { stdout: subStdout } = await execFileAsync(
+      process.execPath,
+      [join(repo, 'dist/cli.js'), 'deep', 'submit', '--path', temp, '--session', cliPrep.session, '--findings', findingsFile, '--out', cliOut],
+      { cwd: temp },
+    );
+    const cliSub = JSON.parse(subStdout) as { accepted: number; report_paths: { json: string; markdown: string } };
+    expect(cliSub.accepted).toBe(1);
+    expect(cliSub.report_paths.json).toMatch(/\.json$/);
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

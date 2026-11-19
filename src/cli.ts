@@ -7,6 +7,9 @@ import { loadProvider } from './llm/provider.js';
 import { runFix } from './fixer/index.js';
 import { severities } from './types.js';
 import { readReport } from './reporters/read.js';
+import { readBoundedFile } from './fs-guards.js';
+import { prepareDeepReview } from './deep/session.js';
+import { submitDeepReview } from './deep/submit.js';
 
 const app = new Command().name('d54-report').version('0.1.0').description('Kaynak kodu ve arayüz denetimi / Software audit and approved fixes');
 function common(cmd:Command) {
@@ -66,6 +69,61 @@ common(app.command('fix').description('Yama öner, onayla ve doğrula'))
       sourceRescan:(dir,target)=>verifySourceRescan(dir,report.modules,target)});
     console.log(o.json ? JSON.stringify({schemaVersion:1,results}) : results.map(x=>[x.id,x.status,x.detail].filter(Boolean).join(' · ')).join('\n') || 'Filtreyle eşleşen bulgu yok.');
     if (results.some(x=>x.status.includes('FAILED'))) process.exitCode=1;
+  });
+
+function parseIntFlag(raw: string, flag: string): number {
+  if (!/^\d+$/.test(raw.trim())) throw Error(`${flag} pozitif bir tam sayı olmalıdır.`);
+  return Number(raw.trim());
+}
+
+const deep = app.command('deep').description('Derin mantık ve işlevsellik incelemesi (ajan modu)');
+deep.command('prepare').description('Riskli dosyaları parçalayıp ajan incelemesi için hazırla')
+  .requiredOption('--path <dir>', 'yerel kaynak dizini')
+  .option('--since <ref>', 'yalnız belirtilen git referansından bu yana değişen aralıklar')
+  .option('--files <n>', 'incelenecek en çok dosya sayısı (1..20)')
+  .option('--max-chunks <n>', 'üretilecek en çok parça sayısı (1..200)')
+  .option('--out <dir>', 'rapor dizini', 'reports')
+  .action(async o => {
+    const root = await realpath(o.path);
+    const files = o.files !== undefined ? parseIntFlag(o.files, '--files') : undefined;
+    const maxChunks = o.maxChunks !== undefined ? parseIntFlag(o.maxChunks, '--max-chunks') : undefined;
+    const res = await prepareDeepReview(root, resolve(o.out), { since: o.since, files, maxChunks });
+    console.log(JSON.stringify(res));
+  });
+
+deep.command('submit').description('Ajanın doğruladığı derin inceleme bulgularını denetleyip rapora birleştir')
+  .requiredOption('--path <dir>', 'yerel kaynak dizini')
+  .requiredOption('--session <id>', 'prepare çıktısındaki 16 karakterlik oturum kimliği')
+  .requiredOption('--findings <json>', 'bulguları içeren JSON dosya yolu')
+  .option('--out <dir>', 'rapor dizini', 'reports')
+  .action(async o => {
+    const root = await realpath(o.path);
+    const raw = (await readBoundedFile(resolve(o.findings), 16 * 1024 * 1024)).toString('utf8');
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); }
+    catch { throw Error('--findings geçerli bir JSON dosyası olmalıdır.'); }
+    let items: unknown[];
+    let counts: { uncertain?: number; rejected?: number } | undefined;
+    if (Array.isArray(parsed)) {
+      items = parsed;
+    } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { findings?: unknown }).findings)) {
+      const obj = parsed as { findings: unknown[]; uncertain?: unknown; rejected?: unknown };
+      items = obj.findings;
+      counts = {
+        ...(typeof obj.uncertain === 'number' && Number.isInteger(obj.uncertain) && obj.uncertain >= 0 ? { uncertain: obj.uncertain } : {}),
+        ...(typeof obj.rejected === 'number' && Number.isInteger(obj.rejected) && obj.rejected >= 0 ? { rejected: obj.rejected } : {}),
+      };
+    } else {
+      throw Error('--findings bir JSON dizisi veya {"findings":[...]} nesnesi içermelidir.');
+    }
+    if (items.length > 200) throw Error('En çok 200 bulgu gönderilebilir.');
+    const res = await submitDeepReview(root, resolve(o.out), o.session, items, counts);
+    console.log(JSON.stringify({
+      accepted: res.accepted,
+      rejected: res.rejected,
+      summary: res.report.summary,
+      report_paths: { markdown: res.prefix + '.md', json: res.prefix + '.json' },
+    }));
   });
 
 app.parseAsync().catch((error:Error)=>{ console.error('D54 · '+error.message.replace(/[\r\n\x1b]/g,' ').slice(0,480));process.exitCode=1; });
