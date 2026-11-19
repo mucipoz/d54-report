@@ -201,7 +201,7 @@ kaynak taramasına yalnız boyut bilgisiyle girebilir.
 Tarama motoru, gereksiz uyarıları önlemek ve gürültüyü azaltmak için bağlamsal filtreler uygular:
 
 - **Genel anahtarlar ve istemci değerleri:** `NEXT_PUBLIC_`, `EXPO_PUBLIC_`, `VITE_` veya `PUBLIC_` önekli değişkenler ile adında "public" geçen değerler atlanır. `pk.` ile başlayan veya `.apps.googleusercontent.com` ile biten istemci anahtarları yoksayılır.
-- **Yol ve metin filtreleri:** `/` ile başlayan yollar, boşluk içeren dizgiler ve en çok 60 karakterlik harf-nokta yolları (ör. `users.verifyEmailToken`) kimlik bilgisi kabul edilmez.
+- **Yol ve metin filtreleri:** yalnız küçük harfli rota biçimindeki `/` ile başlayan değerler (ör. `/reset-password`; büyük harf içeren `/Xk2…` gibi değerler raporlanır), boşluk içeren dizgiler ve en çok 60 karakterlik harf-nokta yolları (ör. `users.verifyEmailToken`) kimlik bilgisi kabul edilmez.
 - **Test ve CI ortamları:** Test/fixture dosyaları ve GitHub Actions iş akışlarındaki (`.github/workflows/`) `services:` bloklarında bulunan kimlik bilgileri `low` seviyesine indirilir.
 - **Tanınan anahtarlar:** AWS, GitHub, Slack anahtarları veya özel anahtar (`PRIVATE KEY`) blokları gibi bilinen biçimler her zaman `high` önem derecesindedir.
 - **Servis hesabı JSON dosyaları:** Git tarafından izleniyorsa `critical`, `.gitignore` ile dışlanmışsa `low` olarak işaretlenir.
