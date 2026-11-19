@@ -188,6 +188,12 @@ export async function runScan(o:ScanOptions) {
         suppressedKnownCredentials = applied.suppressedKnownCredentials;
       }
     }
+    if (target.root) {
+      const git = await gitState(target.root);
+      if (git && !(await git.isIgnored('reports/x'))) {
+        notes.push("reports/ klasörü git tarafından dışlanmıyor. .gitignore'a 'reports/' ekleyin.");
+      }
+    }
     const report: Report = {
       ...makeReport(target, stack, files.length, keptIssues, notes),
       modules,
