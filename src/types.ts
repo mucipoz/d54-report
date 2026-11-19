@@ -18,7 +18,10 @@ export interface Issue {
   impact: string;
   advice: string;
 }
-export interface Finding extends Issue { id: string }
+export const triageVerdicts = ['gerçek', 'yanlış alarm', 'belirsiz'] as const;
+export type TriageVerdict = typeof triageVerdicts[number];
+export interface Triage { verdict: TriageVerdict; reason: string }
+export interface Finding extends Issue { id: string; triage?: Triage }
 export interface Target { project: string; root?: string; repo?: string; url?: string }
 export interface Report {
   schemaVersion: 1;

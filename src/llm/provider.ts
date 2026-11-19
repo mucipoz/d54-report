@@ -5,7 +5,10 @@ import { parse } from 'dotenv';
 import { OpenAICompatible } from './openai-compatible.js';
 import { Anthropic } from './anthropic.js';
 
-export interface LLMProvider { complete(system: string, input: string): Promise<string> }
+export interface LLMProvider {
+  readonly model?: string;
+  complete(system: string, input: string): Promise<string>;
+}
 const endpoints = {
   anthropic:'https://api.anthropic.com/v1', openai:'https://api.openai.com/v1',
   deepseek:'https://api.deepseek.com/v1', glm:'https://api.z.ai/api/paas/v4', 'openai-compatible':''

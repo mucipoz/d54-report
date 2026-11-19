@@ -223,3 +223,43 @@ it('güvenilir modda güven atlama notu coverage içinde yer almaz', async () =>
   const scan = await runScan({ path: root, out, trusted: true, browser: false, modules: ['errors'] });
   expect(scan.report.coverage.join(' ')).not.toContain('Tip/lint/derleme atlandı');
 });
+
+it('triage validates CLI flags and provider before scanning, and attaches triage after makeReport without changing scores', async () => {
+  const repo = fileURLToPath(new URL('../', import.meta.url));
+  const cli = join(repo, 'dist', 'cli.js');
+  const freshOut = join(temp, 'triage-no-provider-out');
+  const cleanEnv = { ...process.env, D54_PROVIDER: '', D54_MODEL: '', D54_API_KEY: '', D54_BASE_URL: '' };
+
+  await expect(promisify(execFile)(process.execPath, [
+    cli, 'scan', '--path', root, '--out', freshOut, '--no-browser', '--triage',
+  ], { cwd: temp, env: cleanEnv, timeout: 20_000 })).rejects.toMatchObject({
+    code: 1,
+    stderr: expect.stringContaining('--triage için model yapılandırması gerekir (d54-report.config.json veya D54_PROVIDER/D54_MODEL)'),
+  });
+  await expect(access(freshOut)).rejects.toThrow();
+
+  await expect(promisify(execFile)(process.execPath, [
+    cli, 'scan', '--path', root, '--out', out, '--no-llm', '--no-browser', '--triage',
+  ], { cwd: temp, env: cleanEnv, timeout: 20_000 })).rejects.toMatchObject({
+    code: 1,
+    stderr: expect.stringContaining('--triage, --no-llm ile birlikte kullanılamaz.'),
+  });
+  expect(await readdir(out)).toEqual(['old.json']);
+
+  await writeFile(join(root, 'app.js'), 'eval(userInput);\n');
+  const baseline = await runScan({ path: root, out, browser: false, modules: ['security'] });
+  const provider = {
+    model: 'test-triage-model',
+    complete: async () => JSON.stringify({ verdict: 'yanlış alarm', reason: 'Örnek test kodu' }),
+  };
+  const triaged = await runScan({ path: root, out, browser: false, modules: ['security'], provider, triage: true });
+  expect(triaged.report.summary).toEqual(baseline.report.summary);
+  expect(triaged.report.priority).toEqual(baseline.report.priority);
+  const evalFinding = triaged.report.findings.find(f => f.rule === 'security.dynamic-eval');
+  expect(evalFinding?.triage).toEqual({ verdict: 'yanlış alarm', reason: 'Örnek test kodu' });
+  expect(triaged.report.coverage.some(c =>
+    c.startsWith('Triyaj:') &&
+    c.includes('Model: test-triage-model') &&
+    c.includes('Bilgi amaçlıdır: bulgu silinmez, puan değişmez; taranan kod modeli yönlendirebilir, kararı doğrulayın.'),
+  )).toBe(true);
+});
