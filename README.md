@@ -141,7 +141,7 @@ the default branch. [Scan workflow](templates/github-action-d54-report.yml) ·
 
 ### Triage
 
-Optional model triage can be enabled with `--llm --triage` on the CLI or `use_llm: true, triage: true` in MCP `d54_scan_project`. Only the first 30 `critical` and `high` findings with source context are sent, using a ±15 line window where sensitive lines are masked as `<gizli satır>` and never sent to the model. Model verdicts are informational only: no findings are removed and the health score does not change. Enabling triage sends scanned code snippets to the configured model provider and incurs API cost.
+Optional model triage can be enabled with `scan --triage` on the CLI (with a configured model) or `use_llm: true, triage: true` in MCP `d54_scan_project`. Only the first 30 `critical` and `high` findings with source context (excluding secret-value findings) are sent, using a ±15 line window where detected sensitive lines are masked as `<gizli satır>`; catching every secret is not guaranteed — do not use triage on repositories containing real secrets. Model verdicts are informational only: no findings are removed and the health score does not change. Enabling triage sends scanned code snippets to the configured model provider and incurs API cost.
 
 ## Tarama kapsamı
 
@@ -328,7 +328,7 @@ maskelenmiş pencere gönderilir.
 
 ### Triyaj
 
-İsteğe bağlı model triyajı CLI'da `--llm --triage`, MCP `d54_scan_project` aracında `use_llm: true, triage: true` ile açılır. Yalnız ilk 30 `critical` ve `high` bulgu, ±15 satırlık kaynak bağlamıyla değerlendirilir; gizli bilgi içeren satırlar `<gizli satır>` olarak maskelenir ve modele gönderilmez. Model kararı yalnızca bilgi amaçlıdır: hiçbir bulgu silinmez ve sağlık puanı değişmez. Triyaj açıldığında taranan kod parçaları yapılandırılmış modele veri olarak gönderilir ve kullanım maliyeti oluşturur.
+İsteğe bağlı model triyajı CLI'da `scan --triage` (yapılandırılmış model ile), MCP `d54_scan_project` aracında `use_llm: true, triage: true` ile açılır. Yalnız ilk 30 `critical` ve `high` bulgu (gizli değer bulguları hariç), ±15 satırlık kaynak bağlamıyla değerlendirilir; tespit edilen hassas satırlar `<gizli satır>` olarak maskelenir; tüm sırları yakalama garantisi yoktur — gizli içerikli depolarda triyajı kullanmayın. Model kararı yalnızca bilgi amaçlıdır: hiçbir bulgu silinmez ve sağlık puanı değişmez. Triyaj açıldığında taranan kod parçaları yapılandırılmış modele veri olarak gönderilir ve kullanım maliyeti oluşturur.
 
 ## Düzeltme
 
