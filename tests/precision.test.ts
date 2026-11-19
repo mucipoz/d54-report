@@ -179,3 +179,51 @@ describe('git durumu', () => {
     expect(literalIssues[0]?.line).not.toBe(keyLine);
   });
 });
+
+function sqlIssues(text: string, path = 'src/db.ts') {
+  const file = source(path, text);
+  return security(file, [file]).filter(i => i.rule === 'security.sql-construction');
+}
+
+describe('sql kuralı', () => {
+  it('parameterized conditional is low', () => {
+    const issues = sqlIssues('query(`SELECT * FROM t${id ? " WHERE id = ?" : ""}`, [id]);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('low');
+    expect(issues[0]?.evidence).toContain('Şablondaki ifadeler sabit; değerler parametreyle gönderiliyor.');
+  });
+
+  it('placeholder list is low', () => {
+    const issues = sqlIssues('query(`INSERT INTO t (a) VALUES (${xs.map(() => "?").join(", ")})`, xs);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('low');
+  });
+
+  it('dynamic identifier keeps high', () => {
+    const issues = sqlIssues('query(`SELECT * FROM t ORDER BY ${req.query.sort}`, []);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('string concat keeps high', () => {
+    const issues = sqlIssues('query("SELECT * FROM t WHERE a = \'" + name + "\'");');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('missing params argument keeps high', () => {
+    const issues = sqlIssues('query(`SELECT * FROM t${id ? " WHERE id = ?" : ""}`);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('constant column list is low while dynamic column list keeps high', () => {
+    const safeIssues = sqlIssues('query(`SELECT ${["id", "name"].map(f => `\\`${f}\\``).join(", ")} FROM t WHERE id = ?`, [id]);');
+    expect(safeIssues).toHaveLength(1);
+    expect(safeIssues[0]?.severity).toBe('low');
+
+    const unsafeIssues = sqlIssues('query(`SELECT ${cols.map(f => `\\`${f}\\``).join(", ")} FROM t WHERE id = ?`, [id]);');
+    expect(unsafeIssues).toHaveLength(1);
+    expect(unsafeIssues[0]?.severity).toBe('high');
+  });
+});

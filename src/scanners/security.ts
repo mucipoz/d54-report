@@ -35,6 +35,45 @@ export function maskSecrets(line: string): string {
   return masked;
 }
 
+function unwrapParens(expr: ts.Expression): ts.Expression {
+  let current = expr;
+  while (ts.isParenthesizedExpression(current)) current = current.expression;
+  return current;
+}
+
+function safeSqlSpan(expr: ts.Expression): boolean {
+  const e = unwrapParens(expr);
+  if (ts.isStringLiteralLike(e) || ts.isNumericLiteral(e)) return true;
+  if (ts.isConditionalExpression(e)) {
+    return safeSqlSpan(e.whenTrue) && safeSqlSpan(e.whenFalse);
+  }
+  if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === 'join') {
+    const sepOk = e.arguments.length === 0 || (e.arguments.length === 1 && ts.isStringLiteralLike(unwrapParens(e.arguments[0]!)));
+    if (!sepOk) return false;
+    const mapCall = unwrapParens(e.expression.expression);
+    if (!ts.isCallExpression(mapCall) || !ts.isPropertyAccessExpression(mapCall.expression) || mapCall.expression.name.text !== 'map') return false;
+    if (mapCall.arguments.length !== 1) return false;
+    const cb = unwrapParens(mapCall.arguments[0]!);
+    if (!ts.isArrowFunction(cb) && !ts.isFunctionExpression(cb)) return false;
+    let body: ts.Expression | undefined;
+    if (!ts.isBlock(cb.body)) body = unwrapParens(cb.body);
+    else if (cb.body.statements.length === 1 && ts.isReturnStatement(cb.body.statements[0]!) && cb.body.statements[0].expression) {
+      body = unwrapParens(cb.body.statements[0].expression);
+    }
+    if (!body) return false;
+    if (ts.isStringLiteralLike(body)) return true;
+    const target = unwrapParens(mapCall.expression.expression);
+    if (ts.isArrayLiteralExpression(target) && target.elements.every(el => ts.isStringLiteralLike(unwrapParens(el)))
+        && ts.isTemplateExpression(body) && body.templateSpans.length === 1
+        && cb.parameters.length === 1 && ts.isIdentifier(cb.parameters[0]!.name)) {
+      const paramName = cb.parameters[0]!.name.text;
+      const spanExpr = unwrapParens(body.templateSpans[0]!.expression);
+      return ts.isIdentifier(spanExpr) && spanExpr.text === paramName;
+    }
+  }
+  return false;
+}
+
 export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
   const issues: Issue[] = [];
   const script = isScript(file.path);
@@ -126,8 +165,16 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
         'Dinamik kod değerlendirmesi', 'Eval çağrısı sabit olmayan bir ifade alıyor.', 'Girdi güven sınırını geçiyorsa uygulama beklenmeyen kod çalıştırabilir.', 'Girdi kaynağını izleyin ve izinli işlemleri doğrudan çağırın.');
       if (first && ['query', 'execute', 'raw'].includes(name)
           && (ts.isTemplateExpression(first) || (ts.isBinaryExpression(first) && first.operatorToken.kind === ts.SyntaxKind.PlusToken))
-          && /\b(?:SELECT|INSERT|UPDATE|DELETE)\b/i.test(first.getText())) add(lineOf(node), 'security.sql-construction', 'high',
-        'SQL sorgusu ifadelerden oluşturuluyor', 'SQL metni şablon genişletmesi veya metin birleştirme içeriyor.', 'Dış girdiler sorgunun yapısını değiştirebilir.', 'Veri akışını inceleyip sorgu parametreleri kullanın.');
+          && /\b(?:SELECT|INSERT|UPDATE|DELETE)\b/i.test(first.getText())) {
+        const second = node.arguments[1];
+        const hasParams = second !== undefined && (ts.isArrayLiteralExpression(second) || ts.isIdentifier(second));
+        const safe = ts.isTemplateExpression(first) && hasParams && first.templateSpans.every(s => safeSqlSpan(s.expression));
+        const evidence = safe
+          ? 'SQL metni şablon genişletmesi veya metin birleştirme içeriyor. Şablondaki ifadeler sabit; değerler parametreyle gönderiliyor.'
+          : 'SQL metni şablon genişletmesi veya metin birleştirme içeriyor.';
+        add(lineOf(node), 'security.sql-construction', safe ? 'low' : 'high',
+          'SQL sorgusu ifadelerden oluşturuluyor', evidence, 'Dış girdiler sorgunun yapısını değiştirebilir.', 'Veri akışını inceleyip sorgu parametreleri kullanın.');
+      }
     }
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         && ts.isPropertyAccessExpression(node.left) && ['innerHTML', 'outerHTML'].includes(node.left.name.text)
