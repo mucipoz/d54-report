@@ -3,19 +3,12 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { repositoryEnv, safeGitArgs } from '../git-state.js';
 import type { Issue } from '../types.js';
 import type { changedLines } from './verifier.js';
 
-function repositoryEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  // Explicit cwd selects the checkout, even when called from a hook with its own index.
-  for (const key of ['GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX',
-    'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GH_REPO']) delete env[key];
-  return { ...env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GH_PROMPT_DISABLED: '1' };
-}
-
 function git(cwd: string, args: string[], fail = true, input?: string) {
-  const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+  const result = spawnSync('git', [...safeGitArgs,
     '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8', input, timeout: 60_000,
     env: repositoryEnv() });
   if (fail && result.status !== 0) throw new Error(`Git işlemi tamamlanamadı (${args[0]})`);
