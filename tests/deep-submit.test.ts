@@ -259,4 +259,29 @@ describe('deep/submit', () => {
     expect(second.rejected).toEqual([{ index: 0, reason: 'zaten raporlu' }]);
     expect(second.report.findings.filter(f => f.rule === 'review.deep.authz')).toHaveLength(1);
   });
+
+  it('rejects findings whose quote matches the sensitive pattern', async () => {
+    await writeFile(
+      join(project, 'src/reset.ts'),
+      'export function resetFlow(u: { ok: boolean }) {\n  return verifyPasswordReset(u.ok);\n}\n',
+    );
+    const prep = await prepareDeepReview(project, out, {});
+    const res = await submitDeepReview(project, out, prep.session, [
+      {
+        category: 'authz',
+        file: 'src/reset.ts',
+        line: 2,
+        quote: 'return verifyPasswordReset(u.ok);',
+        title: 'Sıfırlama kontrolü zayıf',
+        impact: 'Yetkisiz sıfırlama yapılabilir.',
+        advice: 'Ek doğrulama ekleyin.',
+        severity: 'high',
+        verdict: 'confirmed',
+        reason: 'Kontrol sadece tek alana bakıyor.',
+      },
+    ]);
+    expect(res.accepted).toBe(0);
+    expect(res.rejected).toHaveLength(1);
+    expect(res.rejected[0]!.reason).toContain('sır deseni');
+  });
 });

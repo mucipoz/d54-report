@@ -23,7 +23,10 @@ const PEM_BEGIN_RE = /-----BEGIN [^\r\n-]*?(?:PRIVATE KEY|SECRET|KEY)-----/i;
 const PEM_END_RE = /-----END [^\r\n-]*?(?:PRIVATE KEY|SECRET|KEY)-----/i;
 const AUTH_SCHEME_RE = /\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/i;
 const SK_PREFIX_RE = /\b[sr]k_(?:live|test)_/;
-const KEY_LITERAL_RE = /['"][A-Za-z0-9+/=_-]{24,}['"]/;
+const JWT_RE = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
+const AWS_KEY_RE = /AKIA[0-9A-Z]{16}/;
+const GH_TOKEN_RE = /gh[pousr]_[A-Za-z0-9]{20,}/;
+const KEY_LITERAL_RE = /['"`][A-Za-z0-9+/=_-]{24,}['"`]/;
 const SECRET_ASSIGN_RE = /\b[A-Za-z0-9_$]*(?:pass|pwd|secret|token|api_?key|credential)[A-Za-z0-9_$]*["']?\s*[:=]\s*['"`][^'"`\r\n]+['"`]/i;
 const URL_CRED_RE = /:\/\/[^\s/'"]+:[^\s/'"]+@/;
 
@@ -32,6 +35,9 @@ export function deepSensitive(line: string): boolean {
     PEM_HEADER_RE.test(line) ||
     AUTH_SCHEME_RE.test(line) ||
     SK_PREFIX_RE.test(line) ||
+    JWT_RE.test(line) ||
+    AWS_KEY_RE.test(line) ||
+    GH_TOKEN_RE.test(line) ||
     KEY_LITERAL_RE.test(line) ||
     SECRET_ASSIGN_RE.test(line) ||
     URL_CRED_RE.test(line)

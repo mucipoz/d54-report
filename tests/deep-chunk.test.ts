@@ -19,6 +19,18 @@ describe('deep/chunk', () => {
     expect(deepSensitive('requireAuth(ctx);')).toBe(false);
   });
 
+  it('detects JWT, AWS AKIA, GitHub tokens, and backtick 24+ char key literals', () => {
+    expect(deepSensitive('// jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')).toBe(true);
+    expect(deepSensitive('const awsId = "AKIAIOSFODNN7EXAMPLE";')).toBe(true);
+    expect(deepSensitive('// gh: ghp_1234567890abcdefghij123456')).toBe(true);
+    expect(deepSensitive('// gh: gho_1234567890abcdefghij123456')).toBe(true);
+    expect(deepSensitive('// gh: ghu_1234567890abcdefghij123456')).toBe(true);
+    expect(deepSensitive('// gh: ghs_1234567890abcdefghij123456')).toBe(true);
+    expect(deepSensitive('// gh: ghr_1234567890abcdefghij123456')).toBe(true);
+    expect(deepSensitive('const k = `AbCdEfGhIjKlMnOpQrStUvWxYz12`;')).toBe(true);
+    expect(deepSensitive('const shortTemplate = `short_value`;')).toBe(false);
+  });
+
   it('extracts top-level functions, class methods, and object-literal arrows while keeping nested functions inside outer chunk', () => {
     const code = [
       'export function topHelper(x: number) {',
