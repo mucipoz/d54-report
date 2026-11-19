@@ -129,7 +129,7 @@ describe('deep/session', () => {
     await execFileAsync('git', ['add', 'src/a.ts'], { cwd: project });
     await execFileAsync('git', ['commit', '-m', 'init'], { cwd: project });
 
-    const note = 'İzlenmeyen yeni dosyalar fark modunda yok; önce git add -N kullanın';
+    const note = 'İzlenmeyen yeni dosyalar fark modunda yok; önce git add -N kullanın.';
     const diffRes = await prepareDeepReview(project, out, { since: 'HEAD' });
     expect(diffRes.summary.notes).toContain(note);
 
