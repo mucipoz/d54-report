@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { categories, type Category, type Issue, type SourceFile } from '../types.js';
 import { pathsOf } from './static-utils.js';
 import { prepareAudit } from './audit-input.js';
@@ -97,6 +97,20 @@ function compilerAt(cwd: string, root: string): string | undefined {
   }
 }
 
+function ancestorLock(dir: string, paths: ReadonlySet<string>): string | undefined {
+  let current = posix.normalize(dir.split(sep).join('/'));
+  while (current !== '.' && current !== '/' && current !== '') {
+    const parent = posix.dirname(current);
+    if (parent === current) break;
+    for (const lockName of ['package-lock.json', 'npm-shrinkwrap.json']) {
+      const candidate = parent === '.' ? lockName : posix.join(parent, lockName);
+      if (paths.has(candidate)) return candidate;
+    }
+    current = parent;
+  }
+  return undefined;
+}
+
 function plan(root: string, files: readonly SourceFile[], notes: string[], audits: boolean, checks: boolean, rustChecks: boolean): Task[] {
   const tasks: Task[] = [];
   const paths = pathsOf(files);
@@ -109,7 +123,13 @@ function plan(root: string, files: readonly SourceFile[], notes: string[], audit
     if (audits && name === 'package.json') {
       if (sibling('package-lock.json') || sibling('npm-shrinkwrap.json')) {
         add('npm audit', 'npm', ['audit', '--json', '--ignore-scripts', '--fetch-retries=0'], 'npm');
-      } else notes.push(file.path + ' için npm kilit dosyası bulunamadı. npm danışmanlık denetimi atlandı.');
+      } else if (sibling('pnpm-lock.yaml') || sibling('yarn.lock')) {
+        notes.push(file.path + ' — pnpm/yarn kilidi desteklenmiyor; npm danışmanlık denetimi atlandı.');
+      } else {
+        const parentLock = ancestorLock(dir, paths);
+        if (parentLock) notes.push(file.path + ' — kök kilidiyle denetlendi (' + parentLock + ').');
+        else notes.push(file.path + ' için npm kilit dosyası bulunamadı. npm danışmanlık denetimi atlandı.');
+      }
     }
     if (checks && name === 'package.json') {
       try {

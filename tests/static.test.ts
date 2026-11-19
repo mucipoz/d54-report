@@ -249,4 +249,42 @@ describe('araç girdileri', () => {
       expect(result.notes.some(n => n.includes('kilit girdisi denetim dışı kaldı (özel kaynak, takma ad veya geçersiz sürüm)'))).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it('kendi kilidi olmayan workspace üyesinde üst kilit varsa kök kilidiyle denetlendi notu üretir ve görev eklemez', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-ws-lock-'));
+    const emptyBin = await mkdtemp(join(tmpdir(), 'd54-ws-bin-'));
+    const prevPath = process.env.PATH;
+    process.env.PATH = emptyBin;
+    try {
+      const files = [
+        source('package.json', '{"name":"mono","private":true}'),
+        source('package-lock.json', '{}'),
+        source('apps/web/package.json', '{"name":"web"}'),
+        source('packages/npm-shrinkwrap.json', '{}'),
+        source('packages/ui/package.json', '{"name":"ui"}'),
+      ];
+      const result = await scanTools(root, files, false, ['security']);
+      expect(result.notes.some(n => n.includes('apps/web/package.json') && n.includes('kök kilidiyle denetlendi (package-lock.json)'))).toBe(true);
+      expect(result.notes.some(n => n.includes('packages/ui/package.json') && n.includes('kök kilidiyle denetlendi (packages/npm-shrinkwrap.json)'))).toBe(true);
+      expect(result.notes.join('\n')).not.toContain('npm kilit dosyası bulunamadı');
+      expect(result.completion.map(c => c.file)).toEqual(['package.json']);
+    } finally {
+      process.env.PATH = prevPath;
+      await rm(emptyBin, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('kardeş pnpm-lock.yaml veya yarn.lock varsa desteklenmiyor notu üretir ve görev eklemez', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-alt-lock-'));
+    try {
+      const pnpmRes = await scanTools(root, [source('package.json', '{}'), source('pnpm-lock.yaml', '')], false, ['security']);
+      expect(pnpmRes.notes.some(n => n.includes('pnpm/yarn kilidi desteklenmiyor; npm danışmanlık denetimi atlandı'))).toBe(true);
+      expect(pnpmRes.completion).toEqual([]);
+
+      const yarnRes = await scanTools(root, [source('apps/api/package.json', '{}'), source('apps/api/yarn.lock', '')], false, ['security']);
+      expect(yarnRes.notes.some(n => n.includes('apps/api/package.json') && n.includes('pnpm/yarn kilidi desteklenmiyor; npm danışmanlık denetimi atlandı'))).toBe(true);
+      expect(yarnRes.completion).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 });
