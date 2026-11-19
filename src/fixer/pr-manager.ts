@@ -3,11 +3,21 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { Issue } from '../types.js';
+import type { changedLines } from './verifier.js';
+
+function repositoryEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  // Explicit cwd selects the checkout, even when called from a hook with its own index.
+  for (const key of ['GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX',
+    'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GH_REPO']) delete env[key];
+  return { ...env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GH_PROMPT_DISABLED: '1' };
+}
 
 function git(cwd: string, args: string[], fail = true, input?: string) {
   const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
     '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8', input, timeout: 60_000,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' } });
+    env: repositoryEnv() });
   if (fail && result.status !== 0) throw new Error(`Git işlemi tamamlanamadı (${args[0]})`);
   return result;
 }
@@ -21,17 +31,21 @@ export function dirty(root: string, out: string): boolean {
   root = repository(root) ?? root;
   const args = ['status', '--porcelain=v1', '--untracked-files=normal', '--', '.'];
   const output = relative(root, out);
-  if (output && !isAbsolute(output) && !output.startsWith('..' + sep)) args.push(`:(exclude,literal)${output}`);
+  if (output && output !== '..' && !isAbsolute(output) && !output.startsWith('..' + sep)) args.push(`:(exclude,literal)${output}`);
   return git(root, args).stdout.length > 0;
 }
 
-export interface AcceptedPatch { id: string; file: string; before: string; after: string; diff: string; patch: string }
+export interface AcceptedPatch {
+  id: string; file: string; before: string; after: string; diff: string; patch: string;
+  edits: ReturnType<typeof changedLines>; issue: Issue;
+}
 export class PublishUnavailable extends Error {}
 export async function draftPullRequest(root: string, patches: AcceptedPatch[],
   verify: (project: string, patch: AcceptedPatch, checkBase: () => void, apply: () => void) => Promise<void>): Promise<string> {
   const repo = repository(root);
   if (!repo) throw new Error('Git deposu bulunamadı');
   const prefix = relative(repo, root);
+  if (prefix === '..' || prefix.startsWith('..' + sep) || isAbsolute(prefix)) throw new Error('PR proje yolu depo dışında');
   const base = git(repo, ['symbolic-ref', '--short', 'HEAD']).stdout.trim();
   const branch = 'd54-fix/' + new Date().toISOString().slice(0, 10) + '-' + patches[0]!.id.toLowerCase() + '-' + randomUUID().slice(0, 8);
   const temp = mkdtempSync(join(tmpdir(), 'd54-pr-')), tree = join(temp, 'checkout');
@@ -58,14 +72,21 @@ export async function draftPullRequest(root: string, patches: AcceptedPatch[],
     const body = `d54-report verified ${patches.length} patch(es) by rescanning each isolated change.`;
     const fallback = `Yerel dal ve commit hazır. git push -u origin ${branch}\nPR açıklaması: ${body}`;
     if (git(repo, ['remote', 'get-url', 'origin'], false).status !== 0 ||
-        spawnSync('gh', ['auth', 'status'], { cwd: repo, stdio: 'ignore', timeout: 20_000 }).status !== 0) throw new PublishUnavailable(fallback);
+        spawnSync('gh', ['auth', 'status'], { cwd: repo, env: repositoryEnv(), stdio: 'ignore', timeout: 20_000 }).status !== 0) throw new PublishUnavailable(fallback);
     if (git(tree, ['push', '--no-verify', 'origin', 'HEAD:refs/heads/' + branch], false).status !== 0) throw new PublishUnavailable(fallback);
     const pr = spawnSync('gh', ['pr', 'create', '--draft', '--base', base, '--head', branch,
       '--title', 'fix: resolve verified d54-report findings', '--body',
       body],
-      { cwd: tree, encoding: 'utf8', timeout: 60_000 });
+      { cwd: tree, env: repositoryEnv(), encoding: 'utf8', timeout: 60_000 });
     if (pr.status !== 0) throw new PublishUnavailable(`Dal gönderildi (${branch}), taslak PR açılamadı. PR açıklaması: ${body}`);
-    return pr.stdout.trim();
+    for (const line of (pr.stdout ?? '').trim().split(/\r?\n/)) {
+      try {
+        const url = new URL(line.trim());
+        if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash &&
+            /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname)) return url.href;
+      } catch { /* Other CLI output is not a PR URL. */ }
+    }
+    throw new PublishUnavailable(`Dal gönderildi (${branch}), taslak PR adresi doğrulanamadı. PR açıklaması: ${body}`);
   } finally {
     if (attached) git(repo, ['worktree', 'remove', '--force', tree], false);
     rmSync(temp, { recursive: true, force: true });

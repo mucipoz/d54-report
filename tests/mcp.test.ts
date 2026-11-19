@@ -6,15 +6,30 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { expect, it } from 'vitest';
 import type { Report } from '../src/types.js';
+import { previewCommand } from '../src/project-preview.js';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const original = '<a href="./page.html" target="_blank">Saat</a>\n';
+
+it('resolves the installed preview entry and keeps D54 in control of the listening address', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'd54-preview-command-'));
+  try {
+    const dir = join(root, 'node_modules', 'vite');
+    await mkdir(dir, {recursive:true});
+    await writeFile(join(dir, 'package.json'), JSON.stringify({bin:{vite:'cli.js'}}));
+    await writeFile(join(dir, 'cli.js'), '');
+    const manifest = JSON.stringify({scripts:{dev:'vite --mode local --host localhost --port=4000'}});
+    expect(await previewCommand(root, manifest)).toEqual({entry:join(dir,'cli.js'), args:['--mode','local'], name:'vite'});
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
 
 interface ScanResponse {
   summary: Report['summary'];
   report_paths: { json: string; markdown: string };
   critical_high: unknown[];
   coverage: string[];
+  browser_unavailable: boolean;
+  scan_incomplete: boolean;
 }
 interface FixResponse {
   patch_paths: string[];
@@ -53,7 +68,7 @@ it('serves scan, report and verified patch operations over clean JSON-RPC stdio'
       D54_MCP_TRUSTED_ROOT: project, NO_COLOR: '1' };
     const transport = new StdioClientTransport({
       command: process.execPath, cwd: project, env, stderr: 'inherit',
-      args: [join(repo, 'node_modules/vite-node/vite-node.mjs'), '--root', repo, join(repo, 'src/mcp-server.ts')],
+      args: [join(repo, 'dist/mcp-server.js')],
     });
     await client.connect(transport);
     const catalog = await client.listTools();
@@ -62,6 +77,8 @@ it('serves scan, report and verified patch operations over clean JSON-RPC stdio'
     const scan = await call('d54_scan_project', { path: project, modules: ['security', 'performance'] });
     expect(scan.isError, JSON.stringify(scan.content)).not.toBe(true);
     const scanned = scan.structuredContent as unknown as ScanResponse;
+    expect(scanned.browser_unavailable).toBe(false);
+    expect(typeof scanned.scan_incomplete).toBe('boolean');
     expect(scanned).toMatchObject({ summary: { health: expect.any(Number), total: expect.any(Number), counts: expect.any(Object) },
       report_paths: { json: expect.any(String), markdown: expect.any(String) }, critical_high: expect.any(Array), coverage: expect.any(Array) });
     const jsonPath = scanned.report_paths.json;
@@ -109,10 +126,11 @@ it('serves scan, report and verified patch operations over clean JSON-RPC stdio'
       expect(JSON.stringify(response.content)).not.toContain('PRIVATE_FIXTURE_MARKER');
     }
     const denied = await call('d54_fix_findings', { ...args, mode: 'pr' });
-    if (!denied.isError) {
-      const deniedData = denied.structuredContent as unknown as FixResponse;
-      expect(deniedData.results.every(r => r.status !== 'PR_CREATED')).toBe(true);
-    }
+    expect(denied.isError, JSON.stringify(denied.content)).not.toBe(true);
+    const deniedData = denied.structuredContent as unknown as FixResponse;
+    expect(deniedData.results).toEqual([expect.objectContaining({id: target.id, status: 'PATCH_CREATED'})]);
+    expect(deniedData.results[0].verification).toContainEqual(expect.objectContaining({stage: 'pr.verify', status: 'skipped'}));
+    expect(deniedData.patch_paths).toEqual(fixed.patch_paths);
     await client.ping();
     expect(protocolErrors).toEqual([]);
   } finally {

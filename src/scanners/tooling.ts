@@ -1,13 +1,15 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { categories, type Category, type Issue, type SourceFile } from '../types.js';
 import { pathsOf } from './static-utils.js';
 import { prepareAudit } from './audit-input.js';
+import { hostToolPath } from '../fs-guards.js';
 
 type Audit = 'npm' | 'cargo' | 'pip' | 'composer';
+export interface ToolCompletion { label: string; file: string; audit?: Audit; complete: boolean }
 interface Task {
   label: string;
   file: string;
@@ -71,15 +73,7 @@ async function auditRun(root: string, task: Task, files: readonly SourceFile[], 
     await mkdir(home);
     try { await prepareAudit(root, task.file, task.audit!, cwd, pathsOf(files)); }
     catch { return { code: null, stdout: '', stderr: '', problem: 'güvenli denetim girdisi üretilemedi. Özel kaynak, desteklenmeyen sürüm, büyük veya eksik kilit dosyası olabilir' }; }
-    const search: string[] = [];
-    for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-      if (!isAbsolute(dir)) continue;
-      try {
-        const actual = await realpath(dir);
-        if (actual !== root && !actual.startsWith(root + sep) && !actual.split(sep).includes('node_modules')) search.push(actual);
-      } catch { /* Kullanılmayan PATH girdisi. */ }
-    }
-    const env: NodeJS.ProcessEnv = { PATH: search.join(delimiter), HOME: home, USERPROFILE: home, TMPDIR: temp, TEMP: temp,
+    const env: NodeJS.ProcessEnv = { PATH: hostToolPath(root,task.command), HOME: home, USERPROFILE: home, TMPDIR: temp, TEMP: temp,
       CI: 'true', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
       CARGO_HOME: join(home, '.cargo'), COMPOSER_HOME: join(home, '.composer'), XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home,
       npm_config_registry: 'https://registry.npmjs.org/', npm_config_ignore_scripts: 'true',
@@ -246,16 +240,18 @@ function diagnosticLocations(task: Task, output: string, root: string, paths: Re
   return results.size ? [...results.values()] : [{ file: task.file, line: undefined, code: undefined }];
 }
 
-export async function scanTools(root: string, files: readonly SourceFile[], trusted: boolean, modules: readonly Category[] = categories): Promise<{ issues: Issue[]; notes: string[] }> {
+export async function scanTools(root: string, files: readonly SourceFile[], trusted: boolean, modules: readonly Category[] = categories) {
   const notes: string[] = [], issues: Issue[] = [];
+  const completion: ToolCompletion[] = [];
   root = resolve(root);
   const audits = modules.includes('security'), checks = modules.includes('errors');
   const rustOnly = modules.includes('specialized') && !checks && files.some(f=>basename(f.path)==='Cargo.toml');
   if (rustOnly && !trusted) notes.push('Cargo check ve clippy için güvenilir yerel proje izni gerekir.');
   if (checks && !trusted) notes.push('Proje komutları için güvenilir çalışma izni verilmedi. Tip, lint ve derleme araçları atlandı.');
-  if (!audits && !((checks || rustOnly) && trusted)) return { issues, notes };
+  if (!audits && !((checks || rustOnly) && trusted)) return { issues, notes, completion };
   const planned = plan(root, files, notes, audits, checks && trusted, (checks || rustOnly) && trusted);
   const tasks = [...planned.filter(t => t.audit), ...planned.filter(t => !t.audit)];
+  for (const task of tasks) completion.push({ label: task.label, file: task.file, audit: task.audit, complete: false });
   if (tasks.some(t => t.audit)) notes.push('Bağımlılık denetimi geçici dizinlerde çalışır. Paket adları ve sabit sürümler genel danışmanlık hizmetlerinde sorgulanabilir.');
   const deadline = Date.now() + 5 * 60_000;
   let completed = 0;
@@ -265,7 +261,7 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
       notes.push(String(tasks.length - completed) + ' araç görevi toplam süre veya işlem sınırı nedeniyle atlandı.');
       break;
     }
-    completed++;
+    const entry = completion[completed++];
     const timeout = Math.min(remaining, 45_000);
     let result: Run;
     try { result = task.audit ? await auditRun(root, task, files, timeout) : await run(task, timeout); }
@@ -276,7 +272,8 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
       let rows: Advisory[] | undefined;
       try { rows = advisories(task.audit, JSON.parse(result.stdout)); }
       catch { /* Bozuk veya eksik sonuç temiz sayılmaz. */ }
-      if (!rows || result.code === null || (result.code !== 0 && !rows.length)) {
+      const knownExit = result.code === 0 || result.code === 1 || (task.audit === 'composer' && result.code === 3);
+      if (!rows || !knownExit || (result.code !== 0 && !rows.length)) {
         notes.push(label + ' geçerli danışmanlık sonucu vermedi. Araç kurulumu, kilit dosyası ve ağ erişimini kontrol edin.');
         continue;
       }
@@ -294,8 +291,10 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
         advice: row.fixed ? 'Araç düzeltilmiş sürüm olarak ' + row.fixed + ' bildirdi. Uyumluluğu doğrulayıp bağımlılığı güncelleyin.'
           : 'Araç çıktısındaki bağımlılık yolunu inceleyip düzeltilmiş sürüme güncelleyin.' });
       notes.push(label + ' tamamlandı. Bildirilen eşleşme sayısı ' + rows.length + '.');
+      entry.complete = true;
     } else if (result.code === 0) {
       notes.push(label + ' başarılı.');
+      entry.complete = true;
     } else {
       const locations = diagnosticLocations(task, result.stdout + '\n' + result.stderr, root, pathsOf(files));
       if (/no such command|command not found|not recognized as an internal|no module named/i.test(result.stderr + result.stdout)
@@ -305,8 +304,10 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
         severity: 'high', title: task.label + ' başarısız', evidence: 'Çıkış kodu ' + result.code + '.' + (location.code ? ' Tanı ' + location.code + '.' : ''),
         impact: 'Proje bu ortamda ilgili doğrulama adımını geçemedi.', advice: 'Aracı aynı proje dizininde çalıştırıp ilk tanıyı ve kurulu bağımlılıkları kontrol edin.' });
       notes.push(label + ' hata bildirdi.');
+      entry.complete = locations.length <= 100 && locations.every(location => location.line !== undefined);
+      if (locations.length > 100) notes.push(label + ' için yalnız ilk 100 tanı raporlandı.');
     }
   }
   if (!tasks.length && !notes.length) notes.push('Desteklenen bir harici araç hedefi bulunamadı.');
-  return { issues, notes };
+  return { issues, notes, completion };
 }

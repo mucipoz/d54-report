@@ -1,12 +1,14 @@
-import { readdir, lstat, readFile } from 'node:fs/promises';
+import { readdir, lstat, realpath } from 'node:fs/promises';
 import { basename, extname, join, relative, sep } from 'node:path';
 import type { SourceFile } from './types.js';
+import { readBoundedFile } from './fs-guards.js';
 
 const ignored = new Set(['.git', '.hg', '.svn', 'node_modules', 'target', 'dist', 'build', '.next', '.nuxt', 'out', 'reports', 'coverage', 'vendor', '.venv', 'venv', '__pycache__', '.cache', '.gradle', '.dart_tool', '.idea']);
 const sourceExt = /^(?:\.[cm]?[jt]sx?|\.pyi?|\.rs|\.php|\.html?|\.css|\.scss|\.vue|\.svelte|\.jsonc?|\.toml|\.ya?ml|\.txt|\.ini|\.xml|\.sql|\.lock|\.env|\.pem|\.key)$/i;
 const assetExt = /\.(?:png|jpe?g|webp|avif|gif|svg|woff2?|ttf|ico|gltf|glb)$/i;
 const lock = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|composer\.lock|poetry\.lock)$/;
 export async function snapshot(root: string, excluded?: string) {
+  root = await realpath(root);
   const files: SourceFile[] = [];
   const notes: string[] = [];
   let bytes = 0, skipped = 0, unreadable = 0, visited = 0;
@@ -28,12 +30,14 @@ export async function snapshot(root: string, excluded?: string) {
       const name = basename(path);
       if (!sourceExt.test(extname(name)) && !assetExt.test(name) && !/^\.env(?:\.|$)|^Dockerfile$/.test(name)) continue;
       try {
-        const { size } = await lstat(full);
+        const info = await lstat(full);
+        if (!info.isFile()) { unreadable++; continue; }
+        const size = info.size;
         if (bundlesOnly && (size <= 1_048_576 || !/\.(?:[cm]?js|css|png|jpe?g|svg|glb|gltf|webp)$/i.test(name))) continue;
         const metadataOnly = bundlesOnly || assetExt.test(name) || lock.test(path) || /^\.env(?:$|\.(?!example$|sample$|template$))/.test(name) || /\.(key|pem)$/.test(name);
         const tooLarge = size > 1_048_576 || bytes + size > 48 * 1024 * 1024;
         if (tooLarge && !metadataOnly) skipped++;
-        const body = metadataOnly || tooLarge ? '' : await readFile(full, 'utf8');
+        const body = metadataOnly || tooLarge ? '' : (await readBoundedFile(full, Math.min(1_048_576, 48 * 1024 * 1024 - bytes))).toString('utf8');
         bytes += Buffer.byteLength(body);
         files.push({ path, text: body, size });
       } catch { unreadable++; }

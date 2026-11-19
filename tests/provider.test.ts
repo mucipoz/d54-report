@@ -1,7 +1,9 @@
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { loadProvider } from '../src/llm/provider.js';
 import { review } from '../src/llm/review.js';
@@ -121,4 +123,51 @@ it('sends structural source context and accepts only findings tied to supplied l
   expect(result.issues).toHaveLength(1);
   expect(result.issues[0]).toMatchObject({ rule: 'review.business-logic', severity: 'medium', file: 'src/service.ts', line: 4 });
   await expect(review({ complete: async () => '{}' }, sources)).rejects.toThrow('şeması');
+});
+
+it('requires explicit endpoint approval before combining project configuration with a process credential', async () => {
+  const config = join(dir, 'd54-report.config.json');
+  await writeFile(config, JSON.stringify({ provider: 'openai-compatible', model: 'fixture', base_url: base }));
+  vi.stubEnv('D54_API_KEY', 'fixture-credential');
+  const entry = new URL('../dist/llm/provider.js', import.meta.url).href;
+  // Isolate implicit config discovery in the fixture's cwd. Only construct the provider.
+  const script = 'const { loadProvider } = await import(process.argv[1]); try { await loadProvider(); } catch { process.exitCode = 25; }';
+  await expect(promisify(execFile)(process.execPath, ['--input-type=module', '-e', script, entry], {
+    cwd: dir, env: { D54_API_KEY: 'fixture-credential' }, timeout: 10_000,
+  })).rejects.toMatchObject({ code: 25 });
+  expect(received).toHaveLength(0);
+
+  const authorized = await loadProvider(config);
+  expect(await authorized!.complete('s', 'q')).toBe('Yerel yanıt');
+  expect(received).toHaveLength(1);
+  expect(received[0]!.headers.authorization).toBe('Bearer fixture-credential');
+});
+
+it('reports malformed model configuration without quoting its contents', async () => {
+  const path = join(dir, 'operator.json');
+  await writeFile(path, '{"model":FIXTURE_PLAIN_MARKER}');
+  const error = await loadProvider(path).then(() => undefined, (reason: unknown) => reason);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).not.toMatch(/FIXTURE_PLAIN_MARKER|\{"model"/);
+});
+
+it('keeps executable lines while excluding JS template text and Python docstrings', async () => {
+  const code = [
+    { path: 'src/clock.js', text: ['function ready(value) {', '  const label = `',
+      'if TEMPLATE_FIXTURE_LINE', '  `;', '  return value;', '}'].join('\n') },
+    { path: 'src/clock.py', text: ['def ready(value):', '    """',
+      'return DOCSTRING_FIXTURE_LINE', '    """', '    return value'].join('\n') },
+  ];
+  const complete = vi.fn(async (_system: string, _input: string) => '{"findings":[]}');
+  await review({ complete }, code.map(f => ({ ...f, size: Buffer.byteLength(f.text) })));
+  expect(complete).toHaveBeenCalledOnce();
+  const input = complete.mock.calls[0]![1];
+  expect(input).not.toMatch(/TEMPLATE_FIXTURE_LINE|DOCSTRING_FIXTURE_LINE/);
+  const outlines = JSON.parse(input) as { file: string; lines: [number, string][] }[];
+  for (const { path } of code) {
+    const lines = outlines.find(o => o.file === path)?.lines;
+    expect(lines).toEqual(expect.arrayContaining([
+      [1, expect.stringMatching(/ready\s*\(value\)/)], [5, expect.stringMatching(/return\s+value/)],
+    ]));
+  }
 });

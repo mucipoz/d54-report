@@ -1,6 +1,7 @@
-import { constants } from 'node:fs';
-import { open, realpath, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { readBoundedFile } from '../fs-guards.js';
+import { parse as parseToml } from 'smol-toml';
 
 const semver = /^v?\d+(?:\.\d+){1,3}(?:[-+][a-zA-Z0-9.+-]+)?$/;
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
@@ -9,20 +10,8 @@ const safeName = (value: string) => value.length <= 214 && packageName.test(valu
 
 async function input(root: string, file: string, name: string): Promise<string> {
   const path = resolve(root, dirname(file), name);
-  if (await realpath(path) !== path || relative(root, path).split(sep)[0] === '..') throw Error();
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > 8 * 1024 * 1024) throw Error();
-    const buffer = Buffer.alloc(stat.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (!bytesRead) throw Error();
-      offset += bytesRead;
-    }
-    return buffer.toString('utf8');
-  } finally { await handle.close(); }
+  if (relative(root, path).split(sep)[0] === '..') throw Error();
+  return (await readBoundedFile(path, 8 * 1024 * 1024)).toString('utf8');
 }
 
 type Entry = { version: string; name?: string; dependencies?: Record<string, string> };
@@ -56,16 +45,17 @@ function npmInput(source: string): Record<string, string> {
 }
 
 function cargoInput(source: string): Record<string, string> {
-  const records = source.split(/^\[\[package\]\]\s*$/m).slice(1);
-  if (!records.length && !/^version\s*=\s*[34]\s*$/m.test(source)) throw Error();
+  const lock = parseToml(source);
+  const records = lock.package;
+  if (!Array.isArray(records) || !records.length) throw Error();
   const entries: string[] = ['version = 3'];
   for (const record of records) {
-    const location = record.match(/^source\s*=\s*"([^"\n]+)"\s*$/m)?.[1];
-    if (!location) continue; // Yerel çalışma alanı paketi kayıt hizmetinden gelmez.
+    if (!record || typeof record !== 'object' || Array.isArray(record)) throw Error();
+    const { source: location, name, version } = record as Record<string, unknown>;
+    if (typeof name !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(name)
+        || typeof version !== 'string' || !semver.test(version)) throw Error();
+    if (location === undefined) continue; // Yerel çalışma alanı paketi kayıt hizmetinden gelmez.
     if (location !== 'registry+https://github.com/rust-lang/crates.io-index' && location !== 'sparse+https://index.crates.io/') throw Error();
-    const name = record.match(/^name\s*=\s*"([a-zA-Z0-9_-]+)"\s*$/m)?.[1];
-    const version = record.match(/^version\s*=\s*"([^"\n]+)"\s*$/m)?.[1];
-    if (!name || name.length > 128 || !version || !semver.test(version)) throw Error();
     entries.push('[[package]]\nname = "' + name + '"\nversion = "' + version + '"\nsource = "registry+https://github.com/rust-lang/crates.io-index"');
   }
   return { 'Cargo.lock': entries.join('\n\n') + '\n' };

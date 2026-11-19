@@ -8,13 +8,16 @@ import type { Finding, Issue, Report } from '../types.js';
 import type { LLMProvider } from '../llm/provider.js';
 import { candidateFile, deterministicFix, installLockForChecks, toolFix } from './deterministic-fixer.js';
 import { llmFix } from './llm-fixer.js';
-import { copyProject, declaredChecks, planStage, runChecks, runStage, sourcePath, verifyScan, type VerificationStep } from './verifier.js';
+import { changedLines, copyProject, declaredChecks, planStage, projectLine, runChecks, runStage, sourcePath, verifyScan, type VerificationStep } from './verifier.js';
 import { dirty, draftPullRequest, PublishUnavailable, repository, type AcceptedPatch } from './pr-manager.js';
 
 export interface FixOptions {
   root: string; report: Report; out: string; mode: 'patch' | 'interactive' | 'pr';
   dryRun: boolean; force: boolean; yes: boolean; trusted?: boolean;
-  ids?: string[]; severity?: string[]; provider?: LLMProvider; rescan: (dir: string) => Promise<Issue[]>;
+  ids?: string[]; severity?: string[]; provider?: LLMProvider; rescan: (dir: string, target?: Issue) => Promise<Issue[]>;
+  approvePR?: (patches: {id: string; file: string; patchPath: string}[]) => Promise<boolean>;
+  sourceRescan?: (dir: string, target?: Issue) => Promise<Issue[]>;
+  allowCandidatePrompt?: boolean;
 }
 export interface FixResult { id: string; status: string; detail?: string; patchPath?: string; verification?: VerificationStep[] }
 const failed = 'FIX_FAILED (Rollback)';
@@ -37,7 +40,7 @@ function unified(work: string, file: string, before: string, after: string): str
 
 async function applyInCopy(tree: string, file: string, diff: string, expected: string, npmLock: boolean,
   preflight: VerificationStep, apply: VerificationStep) {
-  const path = sourcePath(tree, file, npmLock);
+  sourcePath(tree, file, npmLock);
   const execute = (flags: string[]) => {
     const result = spawnSync('git', ['apply', ...flags, '--whitespace=nowarn', '-'], { cwd: tree, input: diff,
       stdio: ['pipe', 'ignore', 'ignore'], timeout: 15_000,
@@ -47,7 +50,7 @@ async function applyInCopy(tree: string, file: string, diff: string, expected: s
   await runStage(preflight, 'Git yama bağlamını doğrulayamadı', () => execute(['--check']));
   await runStage(apply, 'Yama uygulanamadı veya sonuç beklenen kaynakla eşleşmedi', () => {
     execute([]);
-    if (!readFileSync(path).equals(Buffer.from(expected))) throw new Error('Uygulanan yama beklenen kaynak ile eşleşmedi');
+    if (!readFileSync(sourcePath(tree, file, npmLock)).equals(Buffer.from(expected))) throw new Error('Uygulanan yama beklenen kaynak ile eşleşmedi');
   });
 }
 
@@ -138,26 +141,63 @@ export async function runFix(o: FixOptions): Promise<FixResult[]> {
           continue;
         }
         sourcePath(root, file, npmLock);
-        const live = baseline.find(i => i.file === finding.file && i.rule === finding.rule && i.line === finding.line && i.title === finding.title && i.evidence === finding.evidence);
+        let line = finding.line, ambiguous = false;
+        for (const prior of accepted) {
+          if (line === undefined || prior.file !== finding.file) continue;
+          const [first, last] = projectLine(line, prior.edits);
+          if (first !== last) { ambiguous = true; break; }
+          line = first;
+        }
+        const live = !ambiguous && baseline.find(i => i.file === finding.file && i.rule === finding.rule && i.line === line &&
+          i.severity === finding.severity && i.category === finding.category && i.title === finding.title && i.evidence === finding.evidence);
         if (!live) {
           result.detail = 'Güncel tarama bu konumdaki kanıtı doğrulamadı';
           continue;
         }
         const path = sourcePath(base, file, npmLock), before = readFileSync(path, 'utf8');
         let after = deterministicFix(before, live);
+        let fromModel = false;
         if (after === undefined && o.trusted) after = toolFix(base, work, file, live);
         if (after === before) after = undefined;
-        if (after === undefined && o.provider && !npmLock) after = await llmFix(o.provider, before, live);
+        if (after === undefined && o.provider && !npmLock) {
+          after = await llmFix(o.provider, before, live);
+          fromModel = after !== undefined;
+        }
         if (after === undefined || after === before) {
           result.detail = 'Bu bulgu için uygulanabilir yama yok';
           continue;
         }
         const preflight = planStage(verification, 'git apply --check'), apply = planStage(verification, 'git apply');
+        const sourceCheck = fromModel ? planStage(verification, 'source.rescan') : undefined;
+        const permission = fromModel ? planStage(verification, 'candidate.approval', 'Model yamasını çalıştırmak için ayrı kullanıcı onayı verilmedi') : undefined;
         const checks = declaredChecks(base, file, verification, !!o.trusted), verified = !checks.length || !!o.trusted;
         const rescan = planStage(verification, 'rescan');
-        const diff = unified(work, file, before, after), tree = join(work, 'project');
+        const diff = unified(work, file, before, after), edits = changedLines(diff), tree = join(work, 'project');
         copyProject(base, tree, out, !!o.trusted);
         await applyInCopy(tree, file, diff, after, npmLock, preflight, apply);
+        if (sourceCheck && permission) {
+          await runStage(sourceCheck, 'Model yamasının kaynak taraması doğrulanamadı', async () => {
+            if (!o.sourceRescan) throw Error('Model yaması için proje komutu çalıştırmayan bir kaynak taraması gerekli');
+            const initial = await o.sourceRescan(base, live), modified = await o.sourceRescan(tree, live);
+            const sourceIssue = initial.find(i => i.rule === live.rule && i.file === live.file && i.line === live.line &&
+              i.title === live.title && i.evidence === live.evidence && i.severity === live.severity && i.category === live.category);
+            verifyScan(initial, modified, sourceIssue, file, edits);
+          });
+          const canReview = o.trusted && !o.dryRun && o.mode !== 'patch' && o.allowCandidatePrompt !== false &&
+            process.stdin.isTTY && process.stderr.isTTY;
+          if (canReview || o.dryRun) preview(finding, diff);
+          const consent = canReview ? await ask(`${file} için gösterilen model yamasıyla proje komutları çalıştırılsın mı?`, diff) : 'h';
+          if (consent !== 'e') {
+            for (const step of [...checks.map(check => check.step), rescan]) step.detail = 'Model yamasının çalıştırılması onaylanmadı';
+            if (!o.dryRun) result.patchPath = savePatch(out, finding.id, diff);
+            result.status = o.dryRun ? 'DRY_RUN_UNVERIFIED' : 'PATCH_UNVERIFIED';
+            result.detail = [result.patchPath, 'Yalnız kaynak taraması tamamlandı. Model yamasında proje komutları çalıştırılmadı.'].filter(Boolean).join(' · ');
+            if (consent === 'q') return results;
+            continue;
+          }
+          permission.status = 'passed';
+          delete permission.detail;
+        }
         if (verified && checks.length) {
           const verify = join(work, 'checks'), home = join(work, 'home');
           mkdirSync(home);
@@ -167,8 +207,8 @@ export async function runFix(o: FixOptions): Promise<FixResult[]> {
           await runChecks(verify, checks, home);
         }
         const scanned = await runStage(rescan, 'Yama sonrası tarama veya bulgu doğrulaması başarısız', async () => {
-          const issues = await o.rescan(tree);
-          verifyScan(baseline, issues, live);
+          const issues = await o.rescan(tree, live);
+          verifyScan(baseline, issues, live, file, edits);
           return issues;
         });
         if (o.dryRun || o.mode === 'interactive') preview(finding, diff);
@@ -191,12 +231,20 @@ export async function runFix(o: FixOptions): Promise<FixResult[]> {
             if (answer === 'q') break;
             continue;
           }
-          applySource(root, file, before, after, npmLock);
         }
-        // Subsequent patches include earlier accepted changes, in report order.
-        writeFileSync(path, after);
+        // Prepare the next baseline before committing anything in the user's checkout.
+        const next = join(work, 'next'), previous = join(work, 'previous');
+        writeFileSync(next, after, { mode: lstatSync(path).mode & 0o777 });
+        renameSync(path, previous);
+        try {
+          renameSync(next, path);
+          if (o.mode === 'interactive') applySource(root, file, before, after, npmLock);
+        } catch (error) {
+          renameSync(previous, path);
+          throw error;
+        }
         baseline = scanned;
-        accepted.push({ id: finding.id, file, before, after, diff, patch });
+        accepted.push({ id: finding.id, file, before, after, diff, patch, edits, issue: live });
         result.status = o.mode === 'interactive' ? 'APPLIED' : 'PATCH_CREATED';
         result.detail = patch;
       } catch (err) {
@@ -210,7 +258,10 @@ export async function runFix(o: FixOptions): Promise<FixResult[]> {
       const prSteps = new Map(results.filter(r => r.status === 'PATCH_CREATED').map(result =>
         [result.id, { log: result.verification!, verify: planStage(result.verification!, 'pr.verify') }] as const));
       try {
-        if (!o.yes && await ask('Doğrulanan yamalar için taslak PR açılsın mı?', accepted.map(p => p.patch).join('\n')) !== 'e') {
+        const approved = o.yes || (o.approvePR
+          ? await o.approvePR(accepted.map(p => ({id: p.id, file: p.file, patchPath: p.patch}))).catch(() => false)
+          : await ask('Doğrulanan yamalar için taslak PR açılsın mı?', accepted.map(p => p.patch).join('\n')) === 'e');
+        if (!approved) {
           for (const result of results) if (result.status === 'PATCH_CREATED') {
             result.detail += ' · PR yayımlama onayı verilmedi';
             prSteps.get(result.id)!.verify.detail = 'PR yayımlama onayı verilmedi';
@@ -220,10 +271,10 @@ export async function runFix(o: FixOptions): Promise<FixResult[]> {
         const url = await draftPullRequest(root, accepted, (project, change, checkBase, apply) => {
           const { log, verify: prStep } = prSteps.get(change.id)!;
           return runStage(prStep, 'PR tabanındaki doğrulama tamamlanamadı', async () => {
-            const finding = selected.find(f => f.id === change.id)!;
-            const baseScan = planStage(log, 'pr.baseline'), applyStep = planStage(log, 'pr.git apply --index');
+            const finding = change.issue;
+            const source = planStage(log, 'pr.source'), baseScan = planStage(log, 'pr.baseline'), applyStep = planStage(log, 'pr.git apply --index');
             const work = mkdtempSync(join(temp, 'pr-check-')), cleanBase = join(work, 'before'), home = join(work, 'home');
-            checkBase();
+            await runStage(source, 'PR kaynak dosyası doğrulanan içerikle eşleşmedi', checkBase);
             mkdirSync(home);
             copyProject(project, cleanBase, '', false);
             const checks = declaredChecks(cleanBase, change.file, log, !!o.trusted, 'pr.');
@@ -239,8 +290,9 @@ export async function runFix(o: FixOptions): Promise<FixResult[]> {
             };
             install(cleanBase);
             const before = await runStage(baseScan, 'PR tabanındaki hedef bulgu doğrulanamadı', async () => {
-              const issues = await o.rescan(cleanBase);
+              const issues = await o.rescan(cleanBase, finding);
               if (!issues.some(i => i.file === finding.file && i.rule === finding.rule && i.line === finding.line &&
+                i.severity === finding.severity && i.category === finding.category &&
                 i.title === finding.title && i.evidence === finding.evidence)) throw new Error('PR tabanında hedef bulgu doğrulanamadı');
               return issues;
             });
@@ -255,7 +307,7 @@ export async function runFix(o: FixOptions): Promise<FixResult[]> {
               await runChecks(build, checks, home);
             }
             await runStage(rescan, 'PR yaması sonrası tarama veya bulgu doğrulaması başarısız', async () => {
-              verifyScan(before, await o.rescan(verify), finding);
+              verifyScan(before, await o.rescan(verify, finding), finding, change.file, change.edits);
             });
           });
         });

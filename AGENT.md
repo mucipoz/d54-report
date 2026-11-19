@@ -18,7 +18,7 @@ on that server's filesystem. [Client configuration and examples](README.md#mcp-s
 
 1. Call `d54_scan_project` with `path`, optional `url`, optional `modules`
    and optional `use_llm` (default false). Read `summary`, `coverage`,
-   `critical_high`, `browser_unavailable` and `modules` from
+   `critical_high`, `browser_unavailable`, `scan_incomplete` and `modules` from
    `structuredContent`. The JSON and Markdown paths are in `report_paths`.
 2. Use `d54_get_report` with `report_path` set to either returned file path
    to read the entire Markdown document as text.
@@ -71,19 +71,27 @@ node dist/cli.js fix --path demo-app --report reports/agent/input.json \
 ```
 
 `fix --json` returns `{ "schemaVersion": 1, "results": [...] }`. Each result has
-the report ID, a status and an optional detail. Follow the user's requested
+the report ID, a status and optional detail. Read `patchPath` for the exported
+artifact and `verification` for per-stage outcomes. Follow the user's requested
 mode. Default `patch` creates reviewable local artifacts. `interactive` requires
 an actual terminal and per-patch approval. `pr` can create a commit, push a
 branch and open a draft PR after approval. Use `--yes` only for an authorized PR
 action. A dirty tree requires explicit `--force` to proceed. Do not
 automatically choose it on failure.
 
+Model-generated diffs first pass Git checks and a source-only rescan. Patch mode
+and MCP export them as `PATCH_UNVERIFIED`. To run project commands on a model
+candidate, use a real CLI terminal in `interactive` or `pr` mode with
+`--trusted`. Review the displayed file and diff, then explicitly approve
+execution for that candidate. Applying or publishing the verified change has
+its own approval step.
+
 | Status                  | Meaning                                                                                                                 |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `DRY_RUN`               | Candidate passed applicable verification in a copy. The diff was previewed                                              |
 | `DRY_RUN_UNVERIFIED`    | Dry-run preview completed with project commands pending                                                                 |
 | `PATCH_CREATED`         | A verified patch file is available at the reported path                                                                 |
-| `PATCH_UNVERIFIED`      | A patch was saved. Project commands require trusted mode                                                                |
+| `PATCH_UNVERIFIED`      | A patch was saved. Project checks or candidate execution approval are pending                                            |
 | `APPLIED`               | The user accepted the verified patch in the interactive terminal                                                        |
 | `SKIPPED`               | No applicable candidate, stale evidence, unsupported file, or declined change. Read the detail                          |
 | `FIX_FAILED (Rollback)` | This change failed verification or application. Report its ID and reason. Prior accepted changes have their own results |

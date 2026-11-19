@@ -8,7 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { categories, severities } from './types.js';
 import { findingSchema, findingId, summarySchema, readMarkdown, readReport } from './reporters/read.js';
-import { runScan, staticAudit } from './engine.js';
+import { runScan, verifyRescan, verifySourceRescan } from './engine.js';
 import { runFix } from './fixer/index.js';
 import { loadProvider } from './llm/provider.js';
 
@@ -50,25 +50,26 @@ server.registerTool('d54_scan_project',{
   description:'Scan local source and optionally a running page. Writes Markdown and JSON to the project reports directory.',
   inputSchema:{path:filePath,url:z.string().url().optional(),use_llm:z.boolean().default(false),modules:modules.optional()},
   outputSchema:{summary:summarySchema,report_paths:z.object({markdown:z.string(),json:z.string()}),
-    critical_high:z.array(findingSchema),coverage:z.array(z.string()),browser_unavailable:z.boolean(),modules},
+    critical_high:z.array(findingSchema),coverage:z.array(z.string()),browser_unavailable:z.boolean(),scan_incomplete:z.boolean(),modules},
   annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true}
 },async ({path,url,use_llm,modules:selected})=>{
   const root=await realpath(resolve(path)),out=join(root,'reports');
   await regularOutput(out);
   const provider=use_llm && (!selected || selected.includes('security')) ? await model() : undefined;
-  const {report,prefix,unavailable}=await runScan({path:root,url,out,modules:selected,provider,trusted:await trusted(root)});
+  const {report,prefix,unavailable,browserUnavailable}=await runScan({path:root,url,out,modules:selected,provider,trusted:await trusted(root)});
   return structured({summary:report.summary, report_paths:{markdown:prefix+'.md',json:prefix+'.json'},
     critical_high:report.findings.filter(f=>f.severity==='critical'||f.severity==='high'),coverage:report.coverage,
-    modules:report.modules ?? [...categories],browser_unavailable:unavailable});
+    modules:report.modules ?? [...categories],browser_unavailable:browserUnavailable,scan_incomplete:unavailable});
 });
 
-async function approvePR(root:string,selected:string[]) {
-  if (process.env.D54_MCP_ALLOW_PR==='1' && await trusted(root)) return;
-  if (!server.server.getClientCapabilities()?.elicitation) throw Error('PR için kullanıcı onayı gerekir. Form onayını destekleyen bir istemci veya bu proje için sunucu yayın izni kullanın.');
+async function approvePR(root:string,patches:{id:string;file:string;patchPath:string}[]): Promise<boolean> {
+  if (process.env.D54_MCP_ALLOW_PR==='1' && await trusted(root)) return true;
+  if (!server.server.getClientCapabilities()?.elicitation) return false;
   const reply=await server.server.elicitInput({mode:'form',
-    message:`D54 Report: ${root} için ${selected.join(', ')} bulgularının doğrulanmış yamalarıyla dal, commit, push ve taslak PR oluşturulsun mu?`,
+    message:`D54 Report: ${root} için aşağıdaki doğrulanmış yamalarla dal, commit, push ve taslak PR oluşturulsun mu?\n`+
+      patches.map(p=>`${p.id} · ${p.file} · ${p.patchPath}`).join('\n'),
     requestedSchema:{type:'object',properties:{approve:{type:'boolean',title:'Taslak PR yayımlamayı onayla',default:false}},required:['approve']}});
-  if (reply.action!=='accept' || reply.content?.approve!==true) throw Error('PR yayımlama onayı verilmedi.');
+  return reply.action==='accept' && reply.content?.approve===true;
 }
 function list(value:string|string[]|undefined) {
   return typeof value==='string' ? value.split(',').map(s=>s.trim()) : value;
@@ -88,13 +89,12 @@ server.registerTool('d54_fix_findings',{
   const selected=list(ids), levels=list(severity);
   if (selected?.some(id=>!report.findings.some(f=>f.id===id))) throw Error('Seçilen ID raporda bulunamadı.');
   if (levels?.some(level=>!severities.includes(level as typeof severities[number]))) throw Error('Geçersiz önem filtresi.');
-  const matching=report.findings.filter(f=>(!selected || selected.includes(f.id)) && (!levels || levels.includes(f.severity)));
-  if (mode==='pr' && !dry_run && matching.length) await approvePR(root,matching.map(f=>f.id));
   await regularOutput(out);
   const allowChecks=await trusted(root);
-  const results=await runFix({root,out,report,mode,dryRun:dry_run,force:false,yes:mode==='pr'&&!dry_run,
+  const results=await runFix({root,out,report,mode,dryRun:dry_run,force:false,yes:false,approvePR:patches=>approvePR(root,patches),
     trusted:allowChecks,ids:selected,severity:levels,provider:!dry_run && process.env.D54_MCP_FIX_LLM==='1' ? await model() : undefined,
-    rescan:async dir=>(await staticAudit(dir,undefined,allowChecks,report.modules)).issues});
+    allowCandidatePrompt:false,sourceRescan:(dir,target)=>verifySourceRescan(dir,report.modules,target),
+    rescan:(dir,target)=>verifyRescan(dir,allowChecks,report.modules,target)});
   return structured({patch_paths:[...new Set(results.flatMap(r=>r.patchPath?[r.patchPath]:[]))],
     successful:results.filter(r=>['PATCH_CREATED','PR_CREATED','DRY_RUN'].includes(r.status)),
     rolled_back:results.filter(r=>r.status==='FIX_FAILED (Rollback)'),results});

@@ -3,12 +3,31 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
-import { expect, it } from 'vitest';
+import { chromium, type Route } from 'playwright';
+import { expect, it, vi } from 'vitest';
 import { scanUI } from '../src/scanners/ui-design.js';
+import { passiveRequests } from '../src/scanners/passive-request.js';
 
 it('rejects local-file targets before launching a browser', async () => {
   await expect(scanUI('file:///tmp/example.html', '.')).rejects.toThrow('HTTP(S)');
+});
+
+it('keeps HTTP redirect decisions within the requested origin', async () => {
+  const origin = 'https://example.invalid';
+  const transport = vi.spyOn(globalThis, 'fetch');
+  const fulfill = vi.fn(async () => {}), abort = vi.fn(async () => {}), redirect = vi.fn();
+  const route = { request: () => ({ method: () => 'GET', url: () => origin + '/', allHeaders: async () => ({}) }),
+    fulfill, abort } as unknown as Route;
+  try {
+    const passive = passiveRequests(origin);
+    transport.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: '/canonical' } }));
+    await passive.routeRequest(route, redirect);
+    expect(redirect).toHaveBeenCalledWith(origin + '/canonical');
+    transport.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://other.invalid/' } }));
+    await passive.routeRequest(route, redirect);
+    expect(abort).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalledTimes(2);
+  } finally { transport.mockRestore(); }
 });
 
 const browserAvailable = existsSync(process.env.D54_CHROMIUM_PATH || chromium.executablePath());

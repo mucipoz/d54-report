@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { runScan, staticAudit } from './engine.js';
+import { runScan, verifyRescan, verifySourceRescan } from './engine.js';
 import { loadProvider } from './llm/provider.js';
 import { runFix } from './fixer/index.js';
 import { severities } from './types.js';
@@ -38,7 +38,12 @@ async function selectReport(out:string,root:string,explicit?:string) {
   }
   throw Error('Bu yerel kaynak için scan çalıştırın veya --report ile raporu seçin.');
 }
-function filter(value?:string) {return value?.split(',').map(s=>s.trim()).filter(Boolean);}
+function filter(value?:string) {
+  if (value === undefined) return;
+  const items=value.split(',').map(s=>s.trim());
+  if (items.some(s=>!s)) throw Error('Boş filtre geçersiz. Virgülle ayrılmış değerler girin.');
+  return items;
+}
 common(app.command('fix').description('Yama öner, onayla ve doğrula'))
   .option('--report <file>','scan JSON dosyası').option('--mode <mode>','patch | interactive | pr','patch')
   .option('--ids <list>').option('--severity <list>').option('--dry-run').option('--force','kirli çalışma alanını koruyarak devam et')
@@ -52,8 +57,9 @@ common(app.command('fix').description('Yama öner, onayla ve doğrula'))
     if (severity?.some(s=>!severities.includes(s as typeof severities[number]))) throw Error('Geçersiz önem filtresi.');
     if (ids?.some(id=>!report.findings.some(f=>id===f.id))) throw Error('Seçilen ID raporda bulunamadı.');
     const results=await runFix({root,report,out:resolve(o.out),mode:o.mode,dryRun:!!o.dryRun,force:!!o.force,yes:!!o.yes,
-      severity,ids,trusted:!!o.trusted,provider:o.llm && !o.dryRun ? await loadProvider(o.config) : undefined,
-      rescan:async dir=>(await staticAudit(dir,undefined,!!o.trusted,report.modules)).issues});
+      severity,ids,trusted:!!o.trusted,allowCandidatePrompt:!o.json,provider:o.llm && !o.dryRun ? await loadProvider(o.config) : undefined,
+      rescan:(dir,target)=>verifyRescan(dir,!!o.trusted,report.modules,target),
+      sourceRescan:(dir,target)=>verifySourceRescan(dir,report.modules,target)});
     console.log(o.json ? JSON.stringify({schemaVersion:1,results}) : results.map(x=>[x.id,x.status,x.detail].filter(Boolean).join(' · ')).join('\n') || 'Filtreyle eşleşen bulgu yok.');
     if (results.some(x=>x.status.includes('FAILED'))) process.exitCode=1;
   });

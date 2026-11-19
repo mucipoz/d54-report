@@ -1,15 +1,16 @@
 import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { runScan } from '../src/engine.js';
+import { runScan, verifyRescan, verifySourceRescan } from '../src/engine.js';
 import { markdown } from '../src/reporters/markdown.js';
 import { snapshot } from '../src/source.js';
 import * as ui from '../src/scanners/ui-design.js';
 import { categories } from '../src/types.js';
+import { previewAsset } from '../src/targets.js';
 
 let temp: string, root: string, out: string;
 beforeEach(async () => {
@@ -71,6 +72,45 @@ it('rejects ambiguous targets and output set to the source root', async () => {
   await expect(runScan({ url: 'file:///tmp/private.html', out })).rejects.toThrow('HTTP(S)');
 });
 
+it('requires ordinary directories for report output and ordinary public assets for preview', async () => {
+  const canonical = await realpath(root);
+  const link = join(canonical, 'linked-reports');
+  await symlink(out, link, 'dir');
+  await expect(runScan({ path: canonical, out: join(link, 'nested'), modules: ['bugs'] })).rejects.toThrow('Rapor dizini');
+  await expect(access(join(out, 'nested'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect((await previewAsset(canonical, '/index.html')).type).toBe('text/html');
+  await expect(previewAsset(canonical, '/package.json')).rejects.toThrow();
+  await symlink('app.js', join(canonical, 'linked.js'));
+  await expect(previewAsset(canonical, '/linked.js')).rejects.toThrow();
+  await mkdir(join(canonical, 'assets'));
+  await writeFile(join(canonical, 'assets', 'labels.json'), '{}');
+  expect((await previewAsset(canonical, '/assets/labels.json')).type).toBe('application/json');
+  await expect(previewAsset(canonical, '/assets/labels.json', join(canonical, 'assets'))).rejects.toThrow();
+});
+
+it('marks an empty source scan incomplete without reporting an unavailable browser', async () => {
+  const empty = join(temp, 'empty');
+  await mkdir(empty);
+  const scan = await runScan({ path: empty, out, modules: ['bugs'] });
+  expect(scan.unavailable).toBe(true);
+  expect(scan.browserUnavailable).toBe(false);
+  expect(scan.report.coverage.join(' ')).toContain('Kaynak denetimi tamamlanamadı');
+});
+
+it('requires the target advisory tool to finish independently of other source checks', async () => {
+  const { report } = await runScan({ path: root, out, browser: false, modules: ['security'] });
+  const finding = report.findings.find(f => f.rule === 'security.target-blank')!;
+  await expect(verifyRescan(root, false, ['security'], finding)).resolves.toEqual(expect.any(Array));
+  await expect(verifySourceRescan(root, ['security'], finding)).resolves.toEqual(expect.any(Array));
+  const advisory = { ...finding, file: 'package.json', rule: 'security.advisory-npm' };
+  await expect(verifyRescan(root, false, ['security'], advisory)).rejects.toThrow('Hedef araca');
+  await expect(verifySourceRescan(root, ['security'], advisory)).resolves.toEqual(expect.any(Array));
+  await expect(verifySourceRescan(root, ['security'], { ...finding, file: 'missing.html' })).rejects.toThrow('Hedef kaynak');
+  const large = join(root,'large.html');
+  await writeFile(large,' '.repeat(1_048_577));
+  await expect(verifyRescan(root, false, ['security'], { ...finding, file:'large.html' })).rejects.toThrow('Hedef kaynak');
+});
+
 it('runs only selected source rules, with no browser, provider, audit or build', async () => {
   const complete = vi.fn(async () => JSON.stringify({ findings: [] }));
   const browser = vi.spyOn(ui, 'scanUI');
@@ -123,13 +163,26 @@ it('explains a URL-only source request before launching a browser', async () => 
 
 it('runs the scan command with JSON output and bypasses provider loading with --no-llm', async () => {
   const repo = fileURLToPath(new URL('../', import.meta.url));
-  const runner = join(repo, 'node_modules', 'vite-node', 'vite-node.mjs');
   const { stdout } = await promisify(execFile)(process.execPath, [
-    runner, 'src/cli.ts', 'scan', '--path', root, '--out', out, '--config', join(temp, 'absent.json'),
+    join(repo, 'dist', 'cli.js'), 'scan', '--path', root, '--out', out, '--config', join(temp, 'absent.json'),
     '--no-llm', '--no-browser', '--json',
   ], { cwd: repo, env: { ...process.env, D54_PROVIDER: 'unsupported-fixture-name' }, timeout: 20_000 });
   const report = JSON.parse(stdout);
   expect(report.schemaVersion).toBe(1);
   expect(report.findings).toEqual(expect.arrayContaining([expect.objectContaining({ rule: 'security.target-blank' })]));
   expect(report.coverage.join(' ')).toContain('AI incelemesi çalışmadı');
+});
+
+it.each([['--ids', ','], ['--severity', '']])('rejects an empty %s selection before creating a patch', async (flag, value) => {
+  const { prefix, report } = await runScan({ path: root, out, modules: ['security'] });
+  expect(report.findings.some(f => f.rule === 'security.target-blank')).toBe(true);
+  const original = await readFile(join(root, 'index.html'), 'utf8');
+  const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+  const run = promisify(execFile)(process.execPath, [
+    cli, 'fix', '--path', root, '--out', out, '--report', prefix + '.json', '--mode', 'patch',
+    '--no-llm', flag, value,
+  ], { cwd: root, timeout: 20_000 });
+  await expect(run).rejects.toMatchObject({ code: 1 });
+  expect((await readdir(out, { recursive: true })).filter(path => path.endsWith('.patch'))).toEqual([]);
+  expect(await readFile(join(root, 'index.html'), 'utf8')).toBe(original);
 });

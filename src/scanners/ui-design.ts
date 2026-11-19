@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium, type Page } from 'playwright';
 import type { Issue } from '../types.js';
+import { ensureOutputDirectory } from '../fs-guards.js';
+import { passiveRequests } from './passive-request.js';
 
 const sizes = [
   { name: 'desktop', width: 1440, height: 900 },
@@ -188,7 +190,7 @@ function countRuntime(page: Page) {
   return events;
 }
 
-export async function scanUI(url: string, out: string): Promise<{ issues: Issue[]; notes: string[]; completed: number }> {
+export async function scanUI(url: string, out: string, localFixture = true): Promise<{ issues: Issue[]; notes: string[]; completed: number }> {
   const target = new URL(url);
   if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) throw new Error('Tarama adresi kimlik bilgisi içermeyen HTTP(S) olmalıdır.');
   const cleanUrl = target.origin + target.pathname;
@@ -196,32 +198,46 @@ export async function scanUI(url: string, out: string): Promise<{ issues: Issue[
   const issues: Issue[] = [];
   let completed = 0;
   const notes: string[] = [];
-  await mkdir(join(out, 'screenshots'), { recursive: true });
+  await ensureOutputDirectory(join(out, 'screenshots'));
   const launch = (sandbox: boolean) => chromium.launch({
     executablePath: process.env.D54_CHROMIUM_PATH || undefined, chromiumSandbox: sandbox, timeout: 15000,
+    args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
   });
-  const mode = process.env.D54_CHROMIUM_SANDBOX;
-  const browser = await launch(mode !== '0');
+  const localOverride = localFixture && ['127.0.0.1','[::1]','localhost'].includes(target.hostname)
+    && process.env.D54_CHROMIUM_SANDBOX === '0';
+  const browser = await launch(!localOverride);
   try {
     for (const size of sizes) {
       const viewport = size.name + ' ' + size.width + '×' + size.height;
       const context = await browser.newContext({ viewport: { width: size.width, height: size.height }, serviceWorkers: 'block', acceptDownloads: false });
       const scope = { url: cleanUrl, viewport };
       let blocked = 0;
+      const passive = passiveRequests(target.origin);
+      let documentRedirect: string | undefined;
       const page = await context.newPage();
+      const timer = setTimeout(() => { void context.close().catch(() => {}); }, 40_000);
       try {
         await context.routeWebSocket('**/*', socket => { blocked++; socket.close(); });
         await context.route('**/*', route => {
           const req = route.request();
-          if (!['GET', 'HEAD'].includes(req.method()) || new URL(req.url()).origin !== target.origin) {
-            blocked++;
-            return route.abort('blockedbyclient');
+          let main = false;
+          if (req.isNavigationRequest()) {
+            try { main = req.frame() === page.mainFrame(); } catch { /* Çerçevesi henüz oluşmayan istek. */ }
           }
-          return route.continue();
+          return passive.routeRequest(route, main ? to => { documentRedirect = to; } : undefined);
         });
         await page.addInitScript(observeVitals);
         const runtime = countRuntime(page);
-        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 12000 });
+        let response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 12000 });
+        for (let hop = 0; documentRedirect && hop < 5; hop++) {
+          const to = documentRedirect;
+          documentRedirect = undefined;
+          response = await page.goto(to, { waitUntil: 'domcontentloaded', timeout: 12000 });
+        }
+        if (documentRedirect || !response || !response.ok()) {
+          notes.push(viewport + ' hedef belgesi ölçülemedi. HTTP durumu ' + (response?.status() ?? 'alınamadı') + '.');
+          continue;
+        }
         if (new URL(page.url()).origin !== target.origin) {
           notes.push(viewport + ' farklı kökene yönlendirildi, hedef sayfa ölçülemedi.');
           continue;
@@ -255,12 +271,18 @@ export async function scanUI(url: string, out: string): Promise<{ issues: Issue[
         }
         const inspected = await page.evaluate(inspectViewport);
         let index = 0;
-        for (const sample of inspected.samples) {
+        for (const sample of inspected.samples.slice(0, Object.keys(rules).length * 3)) {
+          if (!sample || typeof sample.rule !== 'string' || !Object.hasOwn(rules,sample.rule) || typeof sample.selector !== 'string' ||
+              typeof sample.evidence !== 'string' || sample.selector.length > 4096 || sample.evidence.length > 8192 ||
+              !sample.box || !Object.values(sample.box).every(Number.isFinite) || sample.box.x < 0 || sample.box.y < 0 ||
+              sample.box.width <= 0 || sample.box.width > size.width || sample.box.height <= 0 || sample.box.height > size.height) continue;
           const description = rules[sample.rule]!;
           const shot = 'screenshots/' + key + '-' + size.name + '-' + sample.rule + '-' + (++index) + '.png';
           let screenshot: string | undefined;
           try {
-            await page.screenshot({ path: join(out, shot), clip: sample.box, timeout: 2000, mask: [page.locator('input,textarea,[contenteditable=true]')] });
+            const png = await page.screenshot({ type: 'png', clip: sample.box, timeout: 2000, mask: [page.locator('input,textarea,[contenteditable=true]')] });
+            await ensureOutputDirectory(join(out,'screenshots'));
+            await writeFile(join(out, shot), png, { flag:'wx', mode:0o600 });
             screenshot = shot;
           } catch {
             notes.push(viewport + ' · ' + sample.rule + ' ekran görüntüsü kaydedilemedi.');
@@ -278,7 +300,9 @@ export async function scanUI(url: string, out: string): Promise<{ issues: Issue[
         const name = error instanceof Error && error.name === 'TimeoutError' ? 'zaman aşımı' : 'gezinti veya ölçüm hatası';
         notes.push(viewport + ' ölçümü tamamlanamadı (' + name + ').');
       } finally {
-        if (blocked) notes.push(viewport + ' · ' + blocked + ' istek engellendi. Yalnız aynı kökenden GET/HEAD yüklendi. Dış kaynak kullanan öğeler eksik görünebilir.');
+        clearTimeout(timer);
+        blocked += passive.counters.blocked;
+        if (blocked) notes.push(viewport + ' · ' + blocked + ' istek engellendi veya tamamlanamadı. Yalnız aynı kökenden GET/HEAD yüklendi. Dış kaynak veya ağ bütçesi gerektiren öğeler eksik görünebilir.');
         await context.close();
       }
     }

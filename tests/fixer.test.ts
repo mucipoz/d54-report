@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { runFix, type FixOptions } from '../src/fixer/index.js';
 import { deterministicFix } from '../src/fixer/deterministic-fixer.js';
 import { llmFix } from '../src/fixer/llm-fixer.js';
+import { changedLines, verifyScan } from '../src/fixer/verifier.js';
 import { makeReport } from '../src/reporters/json.js';
 import type { Issue } from '../src/types.js';
 
@@ -52,6 +53,82 @@ describe('isolated patch verification', () => {
     expect(result.verification).toContainEqual(expect.objectContaining({ stage: 'rescan', status: 'failed' }));
     expect(readFileSync(join(o.root, 'index.html'), 'utf8')).toBe(original);
     expect(existsSync(o.out)).toBe(false);
+  });
+
+  it('tracks identical findings to the requested line across a patch that inserts a line', () => {
+    const target = {...issue, line: 2}, duplicate = {...issue, line: 3};
+    const edits = changedLines('@@ -1,3 +1,4 @@\n heading\n+note\n-first\n+renamed\n second\n');
+    const baseline = [target, duplicate];
+    // The original first occurrence still appears at line 3 after insertion.
+    expect(() => verifyScan(baseline, [{...target, line: 3}], target, 'index.html', edits)).toThrow('hedef');
+    expect(() => verifyScan(baseline, [{...duplicate, line: 4}], target, 'index.html', edits)).not.toThrow();
+    expect(() => verifyScan(baseline, [{...duplicate, line: 7}], target, 'index.html', edits)).toThrow('Yeni bulgu');
+  });
+
+  it('rolls back when the rescan cannot complete the specific finding check', async () => {
+    const o = fixture();
+    const requested: Issue[] = [];
+    o.rescan = async (_dir, target) => {
+      if (!target) return [issue];
+      requested.push(target);
+      throw new Error('Hedef denetim tamamlanamadı');
+    };
+    const [result] = await runFix(o);
+    expect(requested).toEqual([issue]);
+    expect(result.status).toBe('FIX_FAILED (Rollback)');
+    expect(result.verification).toContainEqual(expect.objectContaining({stage:'rescan',status:'failed'}));
+    expect(result.patchPath).toBeUndefined();
+    expect(readFileSync(join(o.root, 'index.html'), 'utf8')).toBe(original);
+  });
+
+  it('requests PR consent only for exported verified patches and preserves them on denial', async () => {
+    const o = fixture();
+    const approvals: string[][] = [];
+    const [result] = await runFix({ ...o, mode: 'pr', approvePR: async patches => {
+      approvals.push(patches.map(p => p.id));
+      expect(patches).toHaveLength(1);
+      expect(patches[0].file).toBe('index.html');
+      expect(readFileSync(patches[0].patchPath, 'utf8')).toContain('noopener');
+      return false;
+    } });
+    expect(approvals).toEqual([[result.id]]);
+    expect(result.status).toBe('PATCH_CREATED');
+    expect(result.verification).toContainEqual(expect.objectContaining({stage: 'pr.verify', status: 'skipped'}));
+    expect(readFileSync(join(o.root, 'index.html'), 'utf8')).toBe(original);
+  });
+
+  it('keeps an unreviewed model patch out of trusted checks, later baselines and the PR approval list', async () => {
+    const o = fixture(), file = 'setting.ts';
+    const modelIssue: Issue = {...issue, file, severity:'high', rule:'bugs.example', title:'Flag', evidence:'true'};
+    const source = 'const setting = true;\n';
+    writeFileSync(join(o.root,file), source);
+    writeFileSync(join(o.root,'package.json'), JSON.stringify({scripts:{test:'exit 0'}}));
+    o.report = makeReport({project:'app',root:o.root}, [], 2, [modelIssue,issue], []);
+    const trustedSources: string[] = [], staticSources: string[] = [], approved: string[] = [];
+    const scan = async (dir:string, seen:string[]) => {
+      const body = readFileSync(join(dir,file),'utf8');
+      seen.push(body);
+      return [...(body.includes('true') ? [modelIssue] : []), ...await fixtureScan(dir)];
+    };
+    const fixtureScan = o.rescan;
+    const results = await runFix({...o,mode:'pr',trusted:true,allowCandidatePrompt:false,
+      provider:{async complete(_system,input) {
+        const line = JSON.parse(input).source.trimEnd() as string;
+        return ['--- a/source','+++ b/source','@@ -1 +1 @@','-'+line,'+'+line.replace('true','false')].join('\n');
+      }}, rescan:dir=>scan(dir,trustedSources), sourceRescan:dir=>scan(dir,staticSources),
+      approvePR:async patches=>{approved.push(...patches.map(p=>p.file));return false;}});
+    const result = results.find(r=>r.id===o.report.findings.find(f=>f.file===file)!.id)!;
+    expect(result.status).toBe('PATCH_UNVERIFIED');
+    expect(existsSync(result.patchPath!)).toBe(true);
+    expect(result.verification).toEqual(expect.arrayContaining([
+      {stage:'source.rescan',status:'passed'}, expect.objectContaining({stage:'test',status:'skipped'}),
+      expect.objectContaining({stage:'candidate.approval',status:'skipped'}),expect.objectContaining({stage:'rescan',status:'skipped'})
+    ]));
+    expect(staticSources).toEqual([source,source.replace('true','false')]);
+    expect(trustedSources.length).toBeGreaterThan(1);
+    expect(trustedSources.every(s=>s===source)).toBe(true);
+    expect(approved).toEqual(['index.html']);
+    expect(readFileSync(join(o.root,file),'utf8')).toBe(source);
   });
 
   it('exports unverified patches when local test execution has not been authorized', async () => {

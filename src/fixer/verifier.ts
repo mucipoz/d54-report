@@ -7,7 +7,7 @@ export function sourcePath(root: string, file: string, lock = false): string {
   const parts = file.split('/');
   const npmLock = lock && /^(?:package-lock|npm-shrinkwrap)\.json$/.test(basename(file));
   if (!file || isAbsolute(file) || parts.some(p => !p || p.startsWith('.') || p.startsWith('-')) ||
-      /[\\:"\x00-\x1f\x7f]/.test(file) || /(?:^|\/)(?:node_modules|vendor|dist|build|coverage|ci|scripts|hooks|tests?|__tests__|__mocks__)(?:\/|$)/i.test(file) ||
+      /[\\:"\x00-\x1f\x7f-\x9f\u2028-\u202e\u2066-\u2069]/.test(file) || /(?:^|\/)(?:node_modules|vendor|dist|build|coverage|ci|scripts|hooks|tests?|__tests__|__mocks__)(?:\/|$)/i.test(file) ||
       (!npmLock && /(?:^|[./_-])(?:config|lock|spec|test|secret|secrets|credentials|private[-_]?key)(?:[./_-]|$)/i.test(file)) ||
       (!npmLock && !/\.(?:[cm]?[jt]sx?|astro|html?|vue|svelte|css|scss|py|go|rs|java|kt|dart|php|rb)$/i.test(file)) ||
       /^(?:setup|conftest|build|manage|vite-env|next-env|jest\.setup)\./i.test(basename(file))) {
@@ -108,18 +108,59 @@ export async function runChecks(root: string, checks: ReturnType<typeof declared
   }
 }
 
-const signature = (i: Issue) => JSON.stringify([i.rule, i.file, i.url, i.selector, i.viewport, i.severity, i.title, i.evidence]);
-export function verifyScan(before: Issue[], after: Issue[], target: Issue): void {
-  const count = (items: Issue[]) => items.filter(i => i.rule === target.rule && i.file === target.file).length;
-  if (count(after) >= count(before)) throw new Error('Yeniden taramada hedef bulgu giderilmedi');
-  const known = new Map<string, number>();
-  for (const issue of before) known.set(signature(issue), (known.get(signature(issue)) ?? 0) + 1);
-  for (const issue of after) {
-    const key = signature(issue);
-    const remaining = known.get(key) ?? 0;
-    if (!remaining) throw new Error(`Yeni bulgu: ${issue.rule}`);
-    known.set(key, remaining - 1);
+const signature = (i: Issue) => JSON.stringify([i.rule, i.category, i.file, i.url, i.selector, i.viewport, i.severity, i.title, i.evidence]);
+type LineEdit = { old: number; removed: number; start: number; added: number };
+export function changedLines(diff: string): LineEdit[] {
+  let old = 0, start = 0, block: LineEdit | undefined;
+  const edits: LineEdit[] = [];
+  for (const row of diff.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(row);
+    if (hunk) {
+      old = Number(hunk[1]) + (hunk[2] === '0' ? 1 : 0);
+      start = Number(hunk[3]) + (hunk[4] === '0' ? 1 : 0);
+      block = undefined;
+    } else if (old && row[0] === ' ') {
+      old++; start++; block = undefined;
+    } else if (old && (row[0] === '+' || row[0] === '-')) {
+      if (!block) { block = {old, removed: 0, start, added: 0}; edits.push(block); }
+      if (row[0] === '-') { old++; block.removed++; }
+      else { start++; block.added++; }
+    }
   }
-  const occurrences = (issues: Issue[]) => issues.filter(i => signature(i) === signature(target)).length;
-  if (occurrences(after) >= occurrences(before)) throw new Error('Hedef kanıt yeniden taramada hâlâ mevcut');
+  return edits;
+}
+
+export function projectLine(line: number, edits: LineEdit[]): [number, number] {
+  let shift = 0;
+  for (const edit of edits) {
+    if (line < edit.old) break;
+    if (line < edit.old + edit.removed) return [edit.start, edit.start + edit.added - 1];
+    shift += edit.added - edit.removed;
+  }
+  return [line + shift, line + shift];
+}
+
+export function verifyScan(before: Issue[], after: Issue[], target: Issue | undefined, file: string, edits: LineEdit[]): void {
+  const range = (issue: Issue) => issue.line === undefined ? undefined :
+    issue.file === file ? projectLine(issue.line, edits) : [issue.line, issue.line];
+  const within = (line: number | undefined, span: number[] | undefined) =>
+    line === undefined ? !span : !!span && span[0]! <= line && line <= span[1]!;
+  if (target) {
+    const key = signature(target), span = range(target);
+    if (after.some(issue => signature(issue) === key && within(issue.line, span))) throw new Error('Yeniden taramada hedef bulgu giderilmedi');
+    const occurrences = (issues: Issue[]) => issues.filter(i => signature(i) === key).length;
+    if (occurrences(after) >= occurrences(before)) throw new Error('Hedef kanıt yeniden taramada hâlâ mevcut');
+  }
+  const known = new Map<string, (number[] | undefined)[]>();
+  for (const issue of before) {
+    const key = signature(issue), slots = known.get(key) ?? [];
+    slots.push(range(issue));
+    known.set(key, slots);
+  }
+  for (const issue of after) {
+    const slots = known.get(signature(issue));
+    const index = slots?.findIndex(span => within(issue.line, span)) ?? -1;
+    if (index < 0) throw new Error(`Yeni bulgu: ${issue.rule}`);
+    slots!.splice(index, 1);
+  }
 }

@@ -1,17 +1,14 @@
 import type { LLMProvider } from './provider.js';
 import type { SourceFile, Issue } from '../types.js';
+import { structuralSource } from './outline.js';
 
 const dimensions = ['authorization','license','rate-limit','race-condition','business-logic'] as const;
 const sensitive = /(?:password|passwd|secret|token|api.?key|authorization\s*:|BEGIN .*PRIVATE KEY|:\/\/[^\s/]+@|[\w+/=-]{36,})/i;
 // Use structural context only. No comments, string values, environment files or lockfiles.
 function outline(file: SourceFile) {
-  let comment = false;
-  return file.text.split(/\r?\n/).slice(0,1200).flatMap((raw,i) => {
-    const before = raw.trim();
-    if (before.includes('/*')) comment = true;
-    if (comment) { if (before.includes('*/')) comment = false; return []; }
-    if (!before || sensitive.test(before) || /^(?:#|\/\/|\*|['"`])/.test(before) || /\x60|'''|"""/.test(before)) return [];
-    const code = before.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g,'""').split(/\/\/|#/)[0].trim();
+  return structuralSource(file).split(/\r?\n/).slice(0,1200).flatMap((raw,i) => {
+    const code = raw.trim();
+    if (!code || sensitive.test(code)) return [];
     return code && /\b(?:if|return|await|async|def|fn|function|class|try|throw|raise|match|lock|update|select|limit|transaction)\b/i.test(code) ? [[i+1,code.slice(0,180)]] : [];
   }).slice(0,48);
 }

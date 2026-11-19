@@ -86,6 +86,16 @@ describe('statik kaynak kuralları', () => {
 });
 
 describe('araç girdileri', () => {
+  it('Cargo girdisi geçerli bir paket listesi olmadan temiz denetim girdisine dönüşmez', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'd54-lock-'));
+    try {
+      const output = join(dir, 'input');
+      await mkdir(output);
+      await writeFile(join(dir, 'Cargo.lock'), 'version = 4\n[[package]]\nname = "a"\nversion =\n');
+      await expect(prepareAudit(dir, 'Cargo.toml', 'cargo', output, new Set(['Cargo.lock']))).rejects.toThrow();
+      await expect(readFile(join(output, 'Cargo.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
   it('varsayılan modda proje derleme betiğini atlar', async () => {
     const file = source('package.json', '{"scripts":{"build":"fixture-build"}}');
     const result = await scanTools(tmpdir(), [file], false);

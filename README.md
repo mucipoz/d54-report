@@ -89,6 +89,8 @@ status in `results[]` to distinguish verification, application and publication.
 The default scan runs without a model account or key. Optional model review
 sends filtered structural lines and file paths from up to six source files.
 Set `D54_PROVIDER`, `D54_MODEL` and `D54_API_KEY` in the operator environment.
+When using an environment credential, set the endpoint or provider in the same
+environment. Use `--config` to authorize a reviewed file with a custom endpoint.
 For `openai-compatible`, set `D54_BASE_URL` to the Chat Completions API base.
 A local server may accept requests without a key. `openai`, `deepseek` and
 `glm` use Chat Completions. `anthropic` uses Messages with the
@@ -205,7 +207,9 @@ erişimi sağlayıp sağlamadığını o hizmetin hesabında kontrol edin.
 bir dosya seçebilirsiniz. Sağlayıcı alanları `llm` nesnesinde veya JSON kökünde
 olabilir. Aynı dizindeki `.env` okunur. Öncelik süreç ortamı, `.env` ve JSON
 ayarları sırasındadır. Anahtarı kabuk ortamında veya sürüm kontrolü dışında
-tuttuğunuz `.env` dosyasında `D54_API_KEY` olarak verin.
+tuttuğunuz `.env` dosyasında `D54_API_KEY` olarak verin. Anahtar ile sağlayıcıyı
+veya uç noktayı aynı ortamda tanımlayın. Özel uç noktayı incelenmiş bir
+JSON dosyasından kullanmak için o dosyayı `--config` ile seçin.
 [Ortam şablonu](.env.example)
 
 Aşağıdaki örnekte `model` alanını yerel sunucuda yüklü modelin kimliğiyle
@@ -263,11 +267,20 @@ giderilmesi ve yeni bulgu oluşmaması aranır. Projede tanımlı kontrolleri
 Uygun hedeflerde yerel araç veya yapılandırılmış model aday yama üretebilir. Her
 bulgunun otomatik düzeltmesi olmayabilir.
 
+Modelin ürettiği fark önce Git denetiminden ve proje komutu çalıştırmayan bir
+kaynak taramasından geçer. `patch` modu ve MCP bu farkı `PATCH_UNVERIFIED`
+olarak dışa aktarır. Model yamasıyla proje kontrollerini çalıştırmak için
+gerçek bir terminalde `--trusted` ile `interactive` veya `pr` modunu kullanın.
+CLI dosyayı ve farkı gösterdikten sonra bu yamayı çalıştırmak için ayrı onay
+ister. Uygulama veya PR yayımlama onayı doğrulama sonrasında geçerlidir.
+
 Makine çıktısı için `--json` kullanın. Tarama JSON'u `schemaVersion`, `target`,
 `stack`, `filesScanned`, `coverage`, `summary`, `findings` ve `priority` içerir.
 Sağlık puanı tamamlanan denetimlerin ağırlıklı bulgularından hesaplanır.
-Düzeltme çıktısında her sonuç için `id`, `status` ve varsa `detail` alanı
-bulunur. Çıkış kodları ve durum adları ajan sözleşmesinde listelenir.
+Düzeltme çıktısında her sonuç için `id`, `status` ve varsa `detail` yer alır.
+`patchPath` oluşturulan yamanın yoludur. `verification` her adım için
+`passed`, `failed` veya `skipped` durumunu bildirir. Çıkış kodları ve durum
+adları ajan sözleşmesinde listelenir.
 [Ajan sözleşmesi](AGENT.md)
 
 ## GitHub Actions
@@ -396,7 +409,8 @@ Yanıtta `summary` toplamı, önem sayıları ve sağlık puanını verir.
 `report_paths.markdown` ve `report_paths.json` seçilen projenin `reports/`
 dizinindeki dosyalardır. `critical_high` kritik ve yüksek bulguları,
 `modules` seçilen modülleri, `coverage` kapsam notlarını,
-`browser_unavailable` ise istenen tarayıcı denetiminin durumunu bildirir.
+`browser_unavailable` istenen tarayıcı denetiminin durumunu bildirir.
+`scan_incomplete` istenen taramanın eksik kaldığını gösterir. Nedeni `coverage` alanında yer alır.
 Diğer önem düzeyleri tam raporda bulunur.
 
 **`d54_fix_findings`** için `report_path` yerel proje kökünü içeren D54 JSON
@@ -437,7 +451,8 @@ Markdown dosyası yanında bulunan D54 JSON raporunu seçin.
 - `D54_MCP_CONFIG`, sunucu operatörüne ait model yapılandırmasının yoludur.
   Dosya verilmediğinde model ayarları sunucu işlem ortamından alınır.
   `D54_MCP_FIX_LLM=1` gerçek düzeltme çağrılarında isteğe bağlı model
-  kullanımını etkinleştirir. Dry run model düzeltmesi çağırmaz.
+  kullanımını etkinleştirir. MCP model yamalarını inceleme için dosyaya kaydeder.
+  Dry run model düzeltmesi çağırmaz.
 - Bir taslak PR yayımlamak için istemci, etkileşimli MCP formunda açık kullanıcı
   onayı alır. Operatörün tek bir proje için yayına önceden izin vermesi de
   mümkündür. Bu durumda tam `D54_MCP_TRUSTED_ROOT` eşleşmesi ve
