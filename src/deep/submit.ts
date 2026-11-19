@@ -121,6 +121,16 @@ export async function submitDeepReview(
     }
   }
 
+  const prevReport = await findLatestReportForRoot(outReal, rootReal);
+  const prevIssues: Issue[] = prevReport
+    ? prevReport.findings.map(({ id: _id, triage: _triage, ...issue }) => issue)
+    : [];
+  const existingKeys = new Set(
+    prevIssues
+      .filter(i => i.file && i.line !== undefined && i.rule.startsWith('review.deep.'))
+      .map(i => `${i.file}\0${i.line}\0${i.rule}`),
+  );
+
   const rejected: { index: number; reason: string }[] = [];
   const acceptedIssues: Issue[] = [];
   const seenKeys = new Set<string>();
@@ -184,8 +194,16 @@ export async function submitDeepReview(
       continue;
     }
 
-    const dedupKey = `${item.file}\0${item.line}\0${item.category}`;
-    if (seenKeys.has(dedupKey)) continue;
+    const rule = 'review.deep.' + item.category;
+    const dedupKey = `${item.file}\0${item.line}\0${rule}`;
+    if (existingKeys.has(dedupKey)) {
+      rejected.push({ index, reason: 'zaten raporlu' });
+      continue;
+    }
+    if (seenKeys.has(dedupKey)) {
+      rejected.push({ index, reason: 'tekrar' });
+      continue;
+    }
     seenKeys.add(dedupKey);
 
     const severity: Severity =
@@ -195,7 +213,7 @@ export async function submitDeepReview(
 
     acceptedIssues.push({
       category: item.category === 'authz' ? 'security' : 'bugs',
-      rule: 'review.deep.' + item.category,
+      rule,
       severity,
       title: 'Derin inceleme (ajan) · ' + item.title.trim(),
       file: item.file,
@@ -205,11 +223,6 @@ export async function submitDeepReview(
       advice: item.advice.trim(),
     });
   }
-
-  const prevReport = await findLatestReportForRoot(outReal, rootReal);
-  const prevIssues: Issue[] = prevReport
-    ? prevReport.findings.map(({ id: _id, triage: _triage, ...issue }) => issue)
-    : [];
 
   const u = counts?.uncertain ?? 0;
   const r = counts?.rejected ?? 0;

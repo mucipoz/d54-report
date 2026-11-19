@@ -141,9 +141,10 @@ describe('deep/submit', () => {
     const res = await submitDeepReview(project, out, prep.session, items, { uncertain: 2, rejected: 3 });
 
     expect(res.accepted).toBe(2);
-    expect(res.rejected).toHaveLength(9);
-    expect(res.rejected.map(r => r.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(res.rejected).toHaveLength(10);
+    expect(res.rejected.map(r => r.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 10]);
     expect(res.rejected[3]!.reason).toContain('kaynak değişti');
+    expect(res.rejected[9]!.reason).toBe('tekrar');
 
     // Previous scan findings are preserved
     expect(res.report.findings.some(f => f.rule === initialRule)).toBe(true);
@@ -164,7 +165,7 @@ describe('deep/submit', () => {
 
     // Health score recalculated downward and saved report on disk is valid
     expect(res.report.summary.health).toBeLessThan(initialHealth);
-    expect(res.report.coverage.some(c => c.includes('2 kabul, 9 ret, ajan bildirimi 2 belirsiz / 3 çürütülen'))).toBe(true);
+    expect(res.report.coverage.some(c => c.includes('2 kabul, 10 ret, ajan bildirimi 2 belirsiz / 3 çürütülen'))).toBe(true);
     expect(res.report.coverage.some(c => c.includes('Ajan doğrulamasını D54 Report kanıtlayamaz'))).toBe(true);
 
     const saved = await readReport(res.prefix + '.json');
@@ -228,5 +229,34 @@ describe('deep/submit', () => {
       { index: 2, reason: 'alıntı çok kısa' },
       { index: 3, reason: 'alıntı çok kısa' },
     ]);
+  });
+
+  it('rejects findings already present in previous report with "zaten raporlu" and in-batch duplicates with "tekrar"', async () => {
+    await writeFile(
+      join(project, 'src/auth.ts'),
+      'export function canEdit(role: string) {\n  return role !== "admin";\n}\n',
+    );
+    const prep = await prepareDeepReview(project, out, {});
+    const finding = {
+      category: 'authz',
+      file: 'src/auth.ts',
+      line: 2,
+      quote: 'return role !== "admin";',
+      title: 'Admin rolü ters kontrol ediliyor',
+      impact: 'Yetkisiz kullanıcılar düzenleme yapabilir.',
+      advice: 'role === "admin" olarak değiştirin.',
+      severity: 'critical',
+      verdict: 'confirmed',
+      reason: '!== işleci yetkiyi tersine çeviriyor.',
+    };
+
+    const first = await submitDeepReview(project, out, prep.session, [finding, finding]);
+    expect(first.accepted).toBe(1);
+    expect(first.rejected).toEqual([{ index: 1, reason: 'tekrar' }]);
+
+    const second = await submitDeepReview(project, out, prep.session, [finding]);
+    expect(second.accepted).toBe(0);
+    expect(second.rejected).toEqual([{ index: 0, reason: 'zaten raporlu' }]);
+    expect(second.report.findings.filter(f => f.rule === 'review.deep.authz')).toHaveLength(1);
   });
 });
