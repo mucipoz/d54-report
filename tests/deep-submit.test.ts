@@ -319,4 +319,20 @@ describe('deep/submit', () => {
     expect(res.accepted).toBe(0);
     expect(res.rejected).toHaveLength(2);
   });
+
+  // Saha testi 20 Kas: "resetPassword" geçen açıklama yanlışlıkla sır sayılıp reddedildi.
+  it('accepts prose that names password/token identifiers but rejects prose carrying a real secret value', async () => {
+    await writeFile(join(project, 'src/audit.ts'), "export function log(actor: unknown) {\n  return { actor: actor, status: 'error' };\n}\n");
+    const prep = await prepareDeepReview(project, out, {});
+    const base = {
+      category: 'logic', file: 'src/audit.ts', line: 2, quote: "return { actor: actor, status: 'error' };",
+      title: 'Hata kaydında aktör atlanıyor', advice: 'auditActor kullanın.', severity: 'low', verdict: 'confirmed',
+    };
+    const res = await submitDeepReview(project, out, prep.session, [
+      { ...base, impact: 'users.resetPassword hata verince token sahibi kayıtta Bilinmeyen görünür.', reason: 'password sıfırlama yolu.' },
+      { ...base, line: 1, quote: 'export function log(actor: unknown) {', impact: 'Örnek: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U', reason: 'Sır taşıyan açıklama.' },
+    ]);
+    expect(res.accepted).toBe(1);
+    expect(res.rejected).toEqual([{ index: 1, reason: 'metin sır deseni içeriyor' }]);
+  });
 });

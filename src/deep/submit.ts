@@ -2,7 +2,6 @@ import { readdir, realpath, stat } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { readBoundedFile } from '../fs-guards.js';
-import { sensitive } from '../llm/review.js';
 import { makeReport } from '../reporters/json.js';
 import { readReport } from '../reporters/read.js';
 import { writeReport } from '../reporters/write.js';
@@ -189,7 +188,8 @@ export async function submitDeepReview(
       rejected.push({ index, reason: 'metin boş veya çok uzun' });
       continue;
     }
-    if (deepSensitive(item.quote) || prose.some(t => sensitive.test(t))) {
+    // Açıklamada "password"/"token" gibi ad geçmesi normal; yalnız gerçek sır değeri reddedilir.
+    if (deepSensitive(item.quote) || prose.some(t => deepSensitive(t))) {
       rejected.push({ index, reason: 'metin sır deseni içeriyor' });
       continue;
     }
