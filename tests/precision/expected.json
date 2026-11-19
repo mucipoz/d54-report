@@ -1,0 +1,12 @@
+[
+  {
+    "file": "src/db.ts",
+    "rule": "security.sql-construction",
+    "severity": "high"
+  },
+  {
+    "file": "src/keys.ts",
+    "rule": "security.literal-secret",
+    "severity": "high"
+  }
+]

@@ -1,0 +1,380 @@
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
+import { describe, expect, it } from 'vitest';
+import { staticAudit } from '../src/engine.js';
+import type { SourceFile } from '../src/types.js';
+import { scan as security, maskSecrets, knownCredentialEvidence } from '../src/scanners/security.js';
+import { isTestPath } from '../src/scanners/static-utils.js';
+
+const execFileAsync = promisify(execFile);
+
+function source(path: string, text: string): SourceFile {
+  return { path, text, size: Buffer.byteLength(text) };
+}
+
+function secretIssues(path: string, text: string) {
+  const file = source(path, text);
+  return security(file, [file]).filter(i => i.rule === 'security.literal-secret');
+}
+
+describe('şifre kuralı', () => {
+  it('ignores public prefixes', () => {
+    const pkVal = ['pk', 'a'.repeat(20)].join('.');
+    expect(secretIssues('.env.production', 'NEXT_PUBLIC_API_KEY=abcdef123456')).toEqual([]);
+    expect(secretIssues('app.json', `{"mapboxPublicToken": "${pkVal}"}`)).toEqual([]);
+    expect(secretIssues('.env', 'EXPO_PUBLIC_TOKEN=abcdef123456\nVITE_API_KEY=abcdef123456')).toEqual([]);
+    expect(secretIssues('src/auth.ts', 'const config = { clientId: "123-abc.apps.googleusercontent.com", apiKey: "123-abc.apps.googleusercontent.com", publicKey: "abcdef123456" };')).toEqual([]);
+  });
+
+  it('ignores route and label values', () => {
+    expect(secretIssues('src/routes.ts', 'const routes = { "/reset-password": "Şifre Sıfırlama" };\nconst password = "/reset-password";')).toEqual([]);
+    expect(secretIssues('src/i18n.ts', 'const labels = { token: "users.verifyEmailToken", password: "Şifremi unuttum" };')).toEqual([]);
+  });
+
+  it('downgrades test files', () => {
+    const issues = secretIssues('scripts/foo-test.cjs', 'const password = "hunter2hunter2";');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('low');
+  });
+
+  it('ci service password low', () => {
+    const workflow = [
+      'jobs:',
+      '  test:',
+      '    services:',
+      '      db:',
+      '        env:',
+      '          MARIADB_ROOT_PASSWORD: integration-only',
+    ].join('\n');
+    const issues = secretIssues('.github/workflows/ci.yml', workflow);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('low');
+  });
+
+  it('keeps real looking secret in app code high', () => {
+    const fakeKey = ['Zx9', 'kL2mP8qR4tV7wY1z'].join('');
+    const issues = secretIssues('src/config.ts', `const apiKey = "${fakeKey}";`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('known credential in test file stays high', () => {
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    const issues = secretIssues('tests/a.test.ts', `const key = "${fakeAws}";`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('masks known and literal credentials via maskSecrets', () => {
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    expect(maskSecrets(`const aws = "${fakeAws}";`)).toBe('const aws = "<gizli>";');
+    expect(maskSecrets('const apiKey = "Zx9kL2mP8qR4tV7w";')).toBe('const apiKey = "<gizli>";');
+    expect(maskSecrets('const publicKey = "Zx9kL2mP8qR4tV7w";')).toBe('const publicKey = "Zx9kL2mP8qR4tV7w";');
+  });
+
+  it('detects test paths via isTestPath', () => {
+    expect(isTestPath('tests/a.test.ts')).toBe(true);
+    expect(isTestPath('scripts/foo-test.cjs')).toBe(true);
+    expect(isTestPath('src/foo.spec.tsx')).toBe(true);
+    expect(isTestPath('src/config.ts')).toBe(false);
+  });
+
+  it('jwt shaped dotted value stays high', () => {
+    const fakeJwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJ1c2VyMSJ9', 'abc123def456'].join('.');
+    const issues = secretIssues('src/auth.ts', `const token = "${fakeJwt}";`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('mapbox secret token stays high', () => {
+    const fakeSk = ['sk', 'eyJ1Ijo1234567890', 'AbCd9876EfGh5432'].join('.');
+    const issues = secretIssues('src/maps.ts', `const accessToken = "${fakeSk}";`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('flags slash-prefixed base64 secret as high while skipping lowercase routes', () => {
+    const base64Secret = ['/', 'Xk2aBcDef123456GhI'].join('');
+    const issues = secretIssues('.env', `JWT_SECRET=${base64Secret}`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('downgrades locale json label words to low while keeping known credentials high', () => {
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    const labelIssues = secretIssues('apps/web/i18n/translations/en.json', '{"password": "Password"}');
+    expect(labelIssues).toHaveLength(1);
+    expect(labelIssues[0]?.severity).toBe('low');
+
+    const knownIssues = secretIssues('apps/web/i18n/translations/en.json', `{"password": "Password", "k": "${fakeAws}"}`);
+    expect(knownIssues.some(i => i.severity === 'high' && i.evidence === knownCredentialEvidence)).toBe(true);
+  });
+
+  it('keeps workflow step env outside services as high', () => {
+    const workflow = [
+      'jobs:',
+      '  deploy:',
+      '    services:',
+      '      db:',
+      '        env:',
+      '          MARIADB_ROOT_PASSWORD: integration-only',
+      '    steps:',
+      '      - name: Deploy',
+      '        env:',
+      '          DEPLOY_PASSWORD: supersecretvalue',
+    ].join('\n');
+    const issues = secretIssues('.github/workflows/deploy.yml', workflow);
+    expect(issues.filter(i => i.severity === 'low')).toHaveLength(1);
+    expect(issues.filter(i => i.severity === 'high')).toHaveLength(1);
+  });
+
+  it('keeps known credential inside workflow services as high', () => {
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    const workflow = [
+      'jobs:',
+      '  test:',
+      '    services:',
+      '      db:',
+      '        env:',
+      `          AWS_ACCESS_KEY_ID: ${fakeAws}`,
+    ].join('\n');
+    const issues = secretIssues('.github/workflows/ci.yml', workflow);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+});
+
+function fakeServiceAccountJson() {
+  const header = '-----BEGIN ' + 'PRIVATE KEY-----';
+  const footer = '-----END ' + 'PRIVATE KEY-----';
+  return JSON.stringify({
+    type: 'service_account',
+    project_id: 'demo-project',
+    private_key_id: 'key-1',
+    private_key: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC\n${footer}\n`,
+    client_email: 'demo@demo-project.iam.gserviceaccount.com',
+  }, null, 2);
+}
+
+describe('git durumu', () => {
+  it('tracked key is critical', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-git-tracked-'));
+    try {
+      await writeFile(join(root, 'sa.json'), fakeServiceAccountJson());
+      await execFileAsync('git', ['init'], { cwd: root });
+      await execFileAsync('git', ['add', 'sa.json'], { cwd: root });
+      const { issues } = await staticAudit(root, undefined, false, ['security']);
+      const fileIssues = issues.filter(i => i.file === 'sa.json');
+      expect(fileIssues).toHaveLength(1);
+      expect(fileIssues[0]?.rule).toBe('security.service-account-key');
+      expect(fileIssues[0]?.severity).toBe('critical');
+      expect(fileIssues[0]?.evidence).not.toContain('MIIEvQIBADAN');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignored key is low', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-git-ignored-'));
+    try {
+      await writeFile(join(root, '.gitignore'), 'sa.json\n');
+      await writeFile(join(root, 'sa.json'), fakeServiceAccountJson());
+      await execFileAsync('git', ['init'], { cwd: root });
+      await execFileAsync('git', ['add', '.gitignore'], { cwd: root });
+      const { issues } = await staticAudit(root, undefined, false, ['security']);
+      const fileIssues = issues.filter(i => i.file === 'sa.json');
+      expect(fileIssues).toHaveLength(1);
+      expect(fileIssues[0]?.rule).toBe('security.service-account-key');
+      expect(fileIssues[0]?.severity).toBe('low');
+      expect(fileIssues[0]?.evidence).toBe("Yerel dosya, git'e girmemiş.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('non git root degrades', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-nongit-'));
+    try {
+      await writeFile(join(root, 'sa.json'), fakeServiceAccountJson());
+      const { issues } = await staticAudit(root, undefined, false, ['security']);
+      const fileIssues = issues.filter(i => i.file === 'sa.json');
+      expect(fileIssues).toHaveLength(1);
+      expect(fileIssues[0]?.rule).toBe('security.service-account-key');
+      expect(fileIssues[0]?.severity).toBe('high');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('service account file keeps other known credentials', () => {
+    const header = '-----BEGIN ' + 'PRIVATE KEY-----';
+    const footer = '-----END ' + 'PRIVATE KEY-----';
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    const json = JSON.stringify({
+      type: 'service_account',
+      private_key: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC\n${footer}\n`,
+      extra_aws_key: fakeAws,
+    }, null, 2);
+    const keyLine = json.split('\n').findIndex(l => l.includes('"private_key"')) + 1;
+    const file = source('sa.json', json);
+    const issues = security(file, [file]);
+    const saIssues = issues.filter(i => i.rule === 'security.service-account-key');
+    const literalIssues = issues.filter(i => i.rule === 'security.literal-secret');
+    expect(saIssues).toHaveLength(1);
+    expect(literalIssues).toHaveLength(1);
+    expect(literalIssues[0]?.severity).toBe('high');
+    expect(literalIssues[0]?.line).not.toBe(keyLine);
+  });
+
+  it('distinguishes knownCredential evidence from setting assignment evidence', () => {
+    const awsKey = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+    const knownIssues = secretIssues('src/cloud.ts', `const k = "${awsKey}";`);
+    expect(knownIssues).toHaveLength(1);
+    expect(knownIssues[0]?.title).toBe('Kaynakta olası kimlik bilgisi');
+    expect(knownIssues[0]?.evidence).toBe(knownCredentialEvidence);
+
+    const settingIssues = secretIssues('config.json', '{"password": "hunter2hunter2"}');
+    expect(settingIssues).toHaveLength(1);
+    expect(settingIssues[0]?.evidence).toBe('Bir kimlik bilgisi örüntüsü veya sabit hassas ayar değeri bulundu. Değer gizlendi.');
+  });
+});
+
+function sqlIssues(text: string, path = 'src/db.ts') {
+  const file = source(path, text);
+  return security(file, [file]).filter(i => i.rule === 'security.sql-construction');
+}
+
+describe('sql kuralı', () => {
+  it('parameterized conditional is low', () => {
+    const issues = sqlIssues('query(`SELECT * FROM t${id ? " WHERE id = ?" : ""}`, [id]);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('low');
+    expect(issues[0]?.evidence).toContain('Şablondaki ifadeler sabit; değerler parametreyle gönderiliyor.');
+  });
+
+  it('placeholder list is low', () => {
+    const issues = sqlIssues('query(`INSERT INTO t (a) VALUES (${xs.map(() => "?").join(", ")})`, xs);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('low');
+  });
+
+  it('dynamic identifier keeps high', () => {
+    const issues = sqlIssues('query(`SELECT * FROM t ORDER BY ${req.query.sort}`, []);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('string concat keeps high', () => {
+    const issues = sqlIssues('query("SELECT * FROM t WHERE a = \'" + name + "\'");');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('missing params argument keeps high', () => {
+    const issues = sqlIssues('query(`SELECT * FROM t${id ? " WHERE id = ?" : ""}`);');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('constant column list is low while dynamic column list keeps high', () => {
+    const safeIssues = sqlIssues('query(`SELECT ${["id", "name"].map(f => `\\`${f}\\``).join(", ")} FROM t WHERE id = ?`, [id]);');
+    expect(safeIssues).toHaveLength(1);
+    expect(safeIssues[0]?.severity).toBe('low');
+
+    const unsafeIssues = sqlIssues('query(`SELECT ${cols.map(f => `\\`${f}\\``).join(", ")} FROM t WHERE id = ?`, [id]);');
+    expect(unsafeIssues).toHaveLength(1);
+    expect(unsafeIssues[0]?.severity).toBe('high');
+  });
+});
+
+interface ExpectedIssue {
+  file: string;
+  rule: string;
+  severity: string;
+}
+
+function buildPrecisionFixtureFiles(): Record<string, string> {
+  const publicPk = ['pk', 'a'.repeat(20)].join('.');
+  const fakeAws = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+  return {
+    'apps/web/src/lib/pages.ts': [
+      'export const routes = { "/reset-password": "Şifre Sıfırlama", "/forgot-password": "Şifremi Unuttum" };',
+      'export const labels = { token: "users.verifyEmailToken", password: "Şifre" };',
+    ].join('\n'),
+    'apps/web/.env.production': [
+      'NEXT_PUBLIC_API_URL=https://api.example.invalid',
+      `NEXT_PUBLIC_MAP_KEY=${publicPk}`,
+    ].join('\n'),
+    'apps/mobile/app.json': JSON.stringify({
+      expo: {
+        name: 'OrnekUygulama',
+        extra: { mapboxPublicToken: publicPk },
+      },
+    }, null, 2),
+    'scripts/odeme-test.cjs': [
+      'const testPassword = "hunter2hunter2";',
+      'module.exports = { testPassword };',
+    ].join('\n'),
+    '.github/workflows/ci.yml': [
+      'jobs:',
+      '  test:',
+      '    services:',
+      '      db:',
+      '        env:',
+      '          MARIADB_ROOT_PASSWORD: integration-only',
+    ].join('\n'),
+    'src/db.ts': [
+      'declare function query(sql: string, params?: unknown[]): void;',
+      'declare const id: string;',
+      'declare const req: { query: { sort: string } };',
+      'query(`SELECT * FROM uyeler${id ? " WHERE id = ?" : ""}`, [id]);',
+      'query(`SELECT * FROM uyeler ORDER BY ${req.query.sort}`, []);',
+    ].join('\n'),
+    'src/keys.ts': `export const cloudKey = "${fakeAws}";\n`,
+  };
+}
+
+function issueKey(item: ExpectedIssue): string {
+  return `${item.file}::${item.rule}::${item.severity}`;
+}
+
+describe('ölçüm seti', () => {
+  it('fixture critical/high equals expected', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'd54-precision-fixture-'));
+    try {
+      const fixtureFiles = buildPrecisionFixtureFiles();
+      for (const [relPath, content] of Object.entries(fixtureFiles)) {
+        const fullPath = join(fixtureRoot, relPath);
+        await mkdir(dirname(fullPath), { recursive: true });
+        await writeFile(fullPath, content, 'utf8');
+      }
+
+      const { issues } = await staticAudit(fixtureRoot, undefined, false, ['security']);
+      const actual: ExpectedIssue[] = issues
+        .filter(i => i.severity === 'critical' || i.severity === 'high')
+        .map(i => ({ file: i.file, rule: i.rule, severity: i.severity }))
+        .sort((a, b) => issueKey(a).localeCompare(issueKey(b)));
+
+      const expectedRaw = await readFile(new URL('./precision/expected.json', import.meta.url), 'utf8');
+      const expected = (JSON.parse(expectedRaw) as ExpectedIssue[])
+        .slice()
+        .sort((a, b) => issueKey(a).localeCompare(issueKey(b)));
+
+      const expectedSet = new Set(expected.map(issueKey));
+      const actualSet = new Set(actual.map(issueKey));
+      const falsePositives = actual.filter(item => !expectedSet.has(issueKey(item))).length;
+      const falseNegatives = expected.filter(item => !actualSet.has(issueKey(item))).length;
+
+      console.info(`yanlış alarm: ${falsePositives}, kaçırma: ${falseNegatives}`);
+
+      expect(falsePositives).toBe(0);
+      expect(falseNegatives).toBe(0);
+      expect(actual).toEqual(expected);
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+});

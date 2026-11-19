@@ -3,6 +3,13 @@ import ts from 'typescript';
 import type { Issue, SourceFile } from '../types.js';
 
 export const isScript = (path: string) => /\.[cm]?[jt]sx?$/i.test(path);
+
+export function isTestPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/');
+  return /(?:^|\/)(?:tests?|__tests__|fixtures?|e2e)\//i.test(normalized)
+    || /[.-](?:test|spec)\.[cm]?[jt]sx?$/i.test(normalized)
+    || /-test\.[cm]?js$/i.test(normalized);
+}
 let cachedFile: SourceFile | undefined;
 let cachedTree: ts.SourceFile | undefined;
 const indexes = new WeakMap<readonly SourceFile[], ReadonlySet<string>>();

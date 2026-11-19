@@ -1,12 +1,16 @@
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { expect, it } from 'vitest';
 import type { Report } from '../src/types.js';
 import { previewCommand } from '../src/project-preview.js';
+
+const execFileAsync = promisify(execFile);
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const original = '<a href="./page.html" target="_blank">Saat</a>\n';
@@ -26,10 +30,14 @@ it('resolves the installed preview entry and keeps D54 in control of the listeni
 interface ScanResponse {
   summary: Report['summary'];
   report_paths: { json: string; markdown: string };
-  critical_high: unknown[];
+  critical_high: { severity: string; rule: string; evidence: string; impact: string; advice: string }[];
+  critical_high_total: number;
+  rule_counts: Record<string, number>;
   coverage: string[];
   browser_unavailable: boolean;
   scan_incomplete: boolean;
+  suppressed?: number;
+  suppressedKnownCredentials?: number;
 }
 interface FixResponse {
   patch_paths: string[];
@@ -135,5 +143,109 @@ it('serves scan, report and verified patch operations over clean JSON-RPC stdio'
     expect(protocolErrors).toEqual([]);
   } finally {
     try { await client.close(); } finally { await rm(temp, { recursive: true, force: true }); }
+  }
+}, 60_000);
+
+async function withMcpClient<T>(cwd: string, fn: (client: Client) => Promise<T>): Promise<T> {
+  const client = new Client({ name: 'd54-integration', version: '1.0.0' });
+  const env = { ...getDefaultEnvironment(), D54_PROVIDER: 'invalid-provider', NO_COLOR: '1' };
+  const transport = new StdioClientTransport({
+    command: process.execPath, cwd, env, stderr: 'inherit',
+    args: [join(repo, 'dist/mcp-server.js')],
+  });
+  try {
+    await client.connect(transport);
+    return await fn(client);
+  } finally {
+    await client.close();
+  }
+}
+
+it('limits critical_high to 25 and reports total', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-limit-'));
+  try {
+    const lines = Array.from({ length: 35 }, (_, i) => `eval(input_${i});`).join('\n');
+    await writeFile(join(temp, 'app.js'), lines + '\n');
+    await writeFile(join(temp, 'page.html'), original);
+    await withMcpClient(temp, async client => {
+      const scan = await client.callTool({ name: 'd54_scan_project', arguments: { path: temp, modules: ['security'] } });
+      expect(scan.isError, JSON.stringify(scan.content)).not.toBe(true);
+      const res = scan.structuredContent as unknown as ScanResponse;
+      expect(res.critical_high).toHaveLength(25);
+      expect(res.critical_high_total).toBe(35);
+      expect(res.rule_counts['security.dynamic-eval']).toBe(35);
+      expect(res.rule_counts['security.target-blank']).toBeUndefined();
+      for (const f of res.critical_high) {
+        expect(f.evidence.length).toBeLessThanOrEqual(200);
+        expect(f.impact.length).toBeLessThanOrEqual(200);
+        expect(f.advice.length).toBeLessThanOrEqual(200);
+      }
+      const saved: Report = JSON.parse(await readFile(res.report_paths.json, 'utf8'));
+      expect(saved.findings.filter(f => f.severity === 'high')).toHaveLength(35);
+    });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it('json result under 15000 chars for 200 high findings', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-200-'));
+  try {
+    const lines = Array.from({ length: 200 }, (_, i) => `eval(input_${i});`).join('\n');
+    await writeFile(join(temp, 'app.js'), lines + '\n');
+    await withMcpClient(temp, async client => {
+      const scan = await client.callTool({ name: 'd54_scan_project', arguments: { path: temp, modules: ['security'] } });
+      expect(scan.isError, JSON.stringify(scan.content)).not.toBe(true);
+      const res = scan.structuredContent as unknown as ScanResponse;
+      expect(res.critical_high).toHaveLength(25);
+      expect(res.critical_high_total).toBe(200);
+      const text = (scan.content as { type: string; text: string }[])[0]!.text;
+      expect(text.length).toBeLessThan(15000);
+    });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it('warns when reports dir not ignored', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-git-'));
+  try {
+    await execFileAsync('git', ['init'], { cwd: temp });
+    await writeFile(join(temp, 'app.js'), 'const x = 1;\n');
+    await withMcpClient(temp, async client => {
+      const scan1 = await client.callTool({ name: 'd54_scan_project', arguments: { path: temp, modules: ['security'] } });
+      expect(scan1.isError, JSON.stringify(scan1.content)).not.toBe(true);
+      const res1 = scan1.structuredContent as unknown as ScanResponse;
+      expect(res1.coverage).toContain("reports/ klasörü git tarafından dışlanmıyor. .gitignore'a 'reports/' ekleyin.");
+
+      await writeFile(join(temp, '.gitignore'), 'reports/\n');
+      const scan2 = await client.callTool({ name: 'd54_scan_project', arguments: { path: temp, modules: ['security'] } });
+      expect(scan2.isError, JSON.stringify(scan2.content)).not.toBe(true);
+      const res2 = scan2.structuredContent as unknown as ScanResponse;
+      expect(res2.coverage).not.toContain("reports/ klasörü git tarafından dışlanmıyor. .gitignore'a 'reports/' ekleyin.");
+    });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it('returns suppressed and suppressedKnownCredentials and notes suppressed known credentials in coverage', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-suppress-'));
+  try {
+    const awsKey = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+    await writeFile(join(temp, 'keys.ts'), `export const k = "${awsKey}";\n`);
+    await writeFile(join(temp, 'page.html'), original);
+    await writeFile(join(temp, '.d54report-ignore'), '* ** # her şeyi gizle\n');
+    await withMcpClient(temp, async client => {
+      const scan = await client.callTool({ name: 'd54_scan_project', arguments: { path: temp, modules: ['security'] } });
+      expect(scan.isError, JSON.stringify(scan.content)).not.toBe(true);
+      const res = scan.structuredContent as unknown as ScanResponse;
+      expect(res.summary.total).toBe(0);
+      expect(res.suppressed).toBeGreaterThanOrEqual(2);
+      expect(res.suppressedKnownCredentials).toBe(1);
+      expect(res.coverage).toContain('Bastırma dosyası 1 gerçek biçimli anahtarı gizledi.');
+    });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
   }
 }, 60_000);

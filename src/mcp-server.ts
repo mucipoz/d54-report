@@ -45,21 +45,48 @@ async function regularOutput(out:string) {
   }
 }
 
+function clip(text:string, limit=200) {
+  return text.length>limit ? text.slice(0,limit-1)+'…' : text;
+}
+
 server.registerTool('d54_scan_project',{
   title:'Audit a local project',
   description:'Scan local source and optionally a running page. Writes Markdown and JSON to the project reports directory.',
   inputSchema:{path:filePath,url:z.string().url().optional(),use_llm:z.boolean().default(false),modules:modules.optional()},
   outputSchema:{summary:summarySchema,report_paths:z.object({markdown:z.string(),json:z.string()}),
-    critical_high:z.array(findingSchema),coverage:z.array(z.string()),browser_unavailable:z.boolean(),scan_incomplete:z.boolean(),modules},
+    critical_high:z.array(findingSchema),critical_high_total:z.number().int().nonnegative(),
+    rule_counts:z.record(z.string(),z.number().int().nonnegative()),
+    coverage:z.array(z.string()),browser_unavailable:z.boolean(),scan_incomplete:z.boolean(),modules,
+    suppressed:z.number().int().nonnegative().optional(),
+    suppressedKnownCredentials:z.number().int().nonnegative().optional()},
   annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true}
 },async ({path,url,use_llm,modules:selected})=>{
   const root=await realpath(resolve(path)),out=join(root,'reports');
   await regularOutput(out);
   const provider=use_llm && (!selected || selected.includes('security')) ? await model() : undefined;
   const {report,prefix,unavailable,browserUnavailable}=await runScan({path:root,url,out,modules:selected,provider,trusted:await trusted(root)});
+  const criticalHighAll=report.findings
+    .filter(f=>f.severity==='critical'||f.severity==='high')
+    .sort((a,b)=>
+      (a.severity===b.severity ? 0 : a.severity==='critical' ? -1 : 1) ||
+      a.rule.localeCompare(b.rule) ||
+      (a.file??'').localeCompare(b.file??'') ||
+      (a.line??0)-(b.line??0));
+  const rule_counts:Record<string,number>={};
+  for (const f of report.findings) {
+    if (f.severity==='critical' || f.severity==='high' || f.severity==='medium') {
+      rule_counts[f.rule]=(rule_counts[f.rule]??0)+1;
+    }
+  }
+  const coverage=report.suppressedKnownCredentials && report.suppressedKnownCredentials>0
+    ? [...report.coverage, `Bastırma dosyası ${report.suppressedKnownCredentials} gerçek biçimli anahtarı gizledi.`]
+    : report.coverage;
   return structured({summary:report.summary, report_paths:{markdown:prefix+'.md',json:prefix+'.json'},
-    critical_high:report.findings.filter(f=>f.severity==='critical'||f.severity==='high'),coverage:report.coverage,
-    modules:report.modules ?? [...categories],browser_unavailable:browserUnavailable,scan_incomplete:unavailable});
+    critical_high:criticalHighAll.slice(0,25).map(f=>({...f,evidence:clip(f.evidence),impact:clip(f.impact),advice:clip(f.advice)})),
+    critical_high_total:criticalHighAll.length,rule_counts,coverage,
+    modules:report.modules ?? [...categories],browser_unavailable:browserUnavailable,scan_incomplete:unavailable,
+    ...(report.suppressed!==undefined ? {suppressed:report.suppressed} : {}),
+    ...(report.suppressedKnownCredentials!==undefined ? {suppressedKnownCredentials:report.suppressedKnownCredentials} : {})});
 });
 
 async function approvePR(root:string,patches:{id:string;file:string;patchPath:string}[]): Promise<boolean> {

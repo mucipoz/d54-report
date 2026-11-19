@@ -16,7 +16,8 @@ export const summarySchema = z.object({ total:count, health:count.max(100), coun
 const reportSchema = z.object({
   schemaVersion:z.literal(1),createdAt:z.string(),target:z.object({project:z.string(),root:z.string().optional(),url:z.string().optional(),repo:z.string().optional()}),
   stack:z.array(z.string()),filesScanned:count,coverage:z.array(z.string()),summary:summarySchema,
-  findings:z.array(findingSchema),priority:z.array(findingId),modules:z.array(z.enum(categories)).optional()
+  findings:z.array(findingSchema),priority:z.array(findingId),modules:z.array(z.enum(categories)).optional(),
+  suppressed:count.optional(),suppressedKnownCredentials:count.optional()
 });
 
 async function textFile(path:string) {

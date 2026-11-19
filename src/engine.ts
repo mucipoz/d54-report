@@ -1,7 +1,8 @@
-import { basename, resolve } from 'node:path';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { lstat, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { snapshot, technology } from './source.js';
+import { gitState } from './git-state.js';
 import { checkout, githubRepoUrl, preview } from './targets.js';
 import { ensureOutputDirectory, readBoundedFile } from './fs-guards.js';
 import { startProject } from './project-preview.js';
@@ -19,6 +20,7 @@ import { review } from './llm/review.js';
 import type { LLMProvider } from './llm/provider.js';
 import { json, makeReport } from './reporters/json.js';
 import { markdown } from './reporters/markdown.js';
+import { applySuppressions, loadSuppressions } from './suppress.js';
 
 const sourceScanners = { errors, security, performance, bugs, specialized };
 function selectedModules(input: readonly Category[] = categories): Category[] {
@@ -52,6 +54,20 @@ async function collectStatic(root: string, out: string | undefined, trusted: boo
     const tools = await scanTools(root,files,trusted,selected);
     toolCompletion = tools.completion;
     issues.push(...tools.issues); notes.push(...tools.notes);
+  }
+  const serviceAccountIssues = issues.filter(i => i.rule === 'security.service-account-key' && i.file);
+  if (serviceAccountIssues.length) {
+    const git = await gitState(root);
+    if (git) {
+      for (const issue of serviceAccountIssues) {
+        const filePath = issue.file!;
+        if (git.tracked.has(filePath)) issue.severity = 'critical';
+        else if (await git.isIgnored(filePath)) {
+          issue.severity = 'low';
+          issue.evidence = "Yerel dosya, git'e girmemiş.";
+        }
+      }
+    }
   }
   return {files,issues,notes,pythonCompleted,toolCompletion};
 }
@@ -159,7 +175,34 @@ export async function runScan(o:ScanOptions) {
       try {const ai=await review(o.provider,files); issues.push(...ai.issues);notes.push(...ai.notes);}
       catch { notes.push('AI incelemesi tamamlanamadı. Sağlayıcı bağlantısını, modeli ve JSON yanıtını kontrol edin.'); }
     } else if (modules.includes('security')) notes.push('AI incelemesi çalışmadı.');
-    const report: Report = { ...makeReport(target,stack,files.length,issues,notes), modules };
+    let keptIssues = issues;
+    let suppressedCount = 0;
+    let suppressedKnownCredentials = 0;
+    if (root) {
+      const { rules, notes: suppressNotes } = await loadSuppressions(root);
+      notes.push(...suppressNotes);
+      if (rules.length) {
+        const applied = applySuppressions(issues, rules);
+        keptIssues = applied.kept;
+        suppressedCount = applied.suppressed;
+        suppressedKnownCredentials = applied.suppressedKnownCredentials;
+      }
+    }
+    if (target.root) {
+      const relOut = relative(target.root, await realpath(out)).replaceAll(sep, '/');
+      if (relOut && relOut !== '..' && !isAbsolute(relOut) && !relOut.startsWith('../')) {
+        const git = await gitState(target.root);
+        if (git && !(await git.isIgnored(relOut + '/x'))) {
+          notes.push(`${relOut}/ klasörü git tarafından dışlanmıyor. .gitignore'a '${relOut}/' ekleyin.`);
+        }
+      }
+    }
+    const report: Report = {
+      ...makeReport(target, stack, files.length, keptIssues, notes),
+      modules,
+      ...(suppressedCount > 0 ? { suppressed: suppressedCount } : {}),
+      ...(suppressedKnownCredentials > 0 ? { suppressedKnownCredentials } : {}),
+    };
     const slug=(target.project.replace(/[^a-z0-9_-]+/gi,'-') || 'project').slice(0,64);
     const prefix=resolve(out,`d54-report-${slug}-${report.createdAt.replace(/[:.]/g,'-')}-${randomUUID().slice(0,8)}`);
     await ensureOutputDirectory(out);

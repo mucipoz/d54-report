@@ -2,6 +2,7 @@ import { severities, type Finding, type Issue, type Report, type Target } from '
 
 const prefixes = {errors:'ERR',security:'SEC',performance:'PERF',ui:'UI',bugs:'BUG',specialized:'SPEC'};
 const weights = {critical:15,high:7,medium:3,low:1};
+const caps = {critical:40,high:30,medium:20,low:10};
 export function makeReport(target: Target, stack: string[], filesScanned: number, issues: Issue[], coverage: string[], createdAt = new Date().toISOString()): Report {
   const counts = {critical:0,high:0,medium:0,low:0};
   const findings: Finding[] = [];
@@ -17,7 +18,7 @@ export function makeReport(target: Target, stack: string[], filesScanned: number
     counts[item.severity]++;
     findings.push({...item,id:prefixes[item.category]+'-'+String(n).padStart(3,'0')});
   }
-  const penalty = severities.reduce((sum,s) => sum + counts[s]*weights[s],0);
+  const penalty = severities.reduce((sum,s) => sum + Math.min(caps[s], counts[s]*weights[s]),0);
   return {schemaVersion:1,createdAt,target,stack,filesScanned,coverage:[...new Set(coverage)],
     summary:{total:findings.length,counts,health:Math.max(0,100-penalty)},findings,priority:findings.slice(0,5).map(f=>f.id)};
 }

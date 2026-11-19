@@ -120,6 +120,13 @@ publish a numeric summary on fork PRs, add the optional companion workflow to
 the default branch. [Scan workflow](templates/github-action-d54-report.yml) ·
 [Fork summary workflow](templates/github-action-d54-fork-comment.yml)
 
+### Key scan features
+
+- **False-positive reduction:** Public prefixes (`NEXT_PUBLIC_`, `VITE_`, etc.), paths, spaced strings, and dot-notation paths are skipped; recognized key formats (AWS, GitHub, Slack) stay `high`; tracked service account JSONs trigger `critical` while gitignored copies drop to `low`.
+- **Capped health score:** Penalties are calculated with strict caps per severity (Critical 40, High 30, Medium 20, Low 10) on a 100-point scale (`puan = 100 - penalty`).
+- **Suppression file (`.d54report-ignore`):** Findings can be excluded via `<rule|*> <path-glob>[:line] # <reason>` in the target root. Reasons are mandatory; suppressed counts and suppressed real credentials are explicitly tracked.
+- **Compact MCP summary:** `d54_scan_project` caps critical/high findings at 25 items and truncates evidence/impact/advice to 200 characters to conserve agent context.
+
 ## Tarama kapsamı
 
 | Hedef           | Komut veya örnek                                                       | Kanıt                                                             |
@@ -188,6 +195,64 @@ komutlar proje kodunu ve yapılandırmasını kullanabilir. Kaynak toplamada
 sembolik bağlantılar ve derleme dizinleri atlanır. Dosya içeriği başına 1 MiB ve
 toplamda 48 MiB okuma bütçesi vardır. Büyük dosyalar veya kilit dosyaları genel
 kaynak taramasına yalnız boyut bilgisiyle girebilir.
+
+### Yanlış alarm azaltma
+
+Tarama motoru, gereksiz uyarıları önlemek ve gürültüyü azaltmak için bağlamsal filtreler uygular:
+
+- **Genel anahtarlar ve istemci değerleri:** `NEXT_PUBLIC_`, `EXPO_PUBLIC_`, `VITE_` veya `PUBLIC_` önekli değişkenler ile adında "public" geçen değerler atlanır. `pk.` ile başlayan veya `.apps.googleusercontent.com` ile biten istemci anahtarları yoksayılır.
+- **Yol ve metin filtreleri:** yalnız küçük harfli rota biçimindeki `/` ile başlayan değerler (ör. `/reset-password`; büyük harf içeren `/Xk2…` gibi değerler raporlanır), boşluk içeren dizgiler ve en çok 60 karakterlik harf-nokta yolları (ör. `users.verifyEmailToken`) kimlik bilgisi kabul edilmez.
+- **Test ve CI ortamları:** Test/fixture dosyaları ve GitHub Actions iş akışlarındaki (`.github/workflows/`) `services:` bloklarında bulunan kimlik bilgileri `low` seviyesine indirilir.
+- **Tanınan anahtarlar:** AWS, GitHub, Slack anahtarları veya özel anahtar (`PRIVATE KEY`) blokları gibi bilinen biçimler her zaman `high` önem derecesindedir.
+- **Servis hesabı JSON dosyaları:** Git tarafından izleniyorsa `critical`, `.gitignore` ile dışlanmışsa `low` olarak işaretlenir.
+- **SQL sorguları:** Şablon içindeki tüm `${}` ifadeleri güvenli/izinli sabitlerden oluşuyor ve değerler sorguya parametre dizisiyle aktarılıyorsa `low`, aksi durumda `high` atanır.
+
+> **Bilinen ödünleşimler:** Boşluk içeren parolalar ve adında "public" geçen gizli değerler bu kurallar nedeniyle atlanır.
+
+### Sağlık puanı
+
+Sağlık puanı 100 üzerinden hesaplanır. Her önem derecesinin puan cezası tavan değerle sınırlandırılır:
+
+$$\text{penalty} = \sum \min(\text{tavan}, \text{sayı} \times \text{ağırlık})$$
+$$\text{puan} = 100 - \text{penalty}$$
+
+| Önem Seviyesi | Ağırlık (Ceza / Adet) | Tavan Ceza |
+| ------------- | :-------------------: | :--------: |
+| `critical`    | 15                    | 40         |
+| `high`        | 7                     | 30         |
+| `medium`      | 3                     | 20         |
+| `low`         | 1                     | 10         |
+
+### Bulgu bastırma (.d54report-ignore)
+
+Hedef proje kökündeki `.d54report-ignore` dosyasıyla bilinen veya beklenen bulgular bastırılabilir:
+
+- **Satır biçimi:** `<kural|*> <yol-glob>[:<satır>] # <gerekçe>`
+- **Zorunlu gerekçe:** Her kuraldan sonra `#` ile gerekçe belirtilmelidir; gerekçesiz satırlar yoksayılır ve rapor kapsam notlarında listelenir.
+- **Glob kuralları:** `*` tek bir yol segmenti içinde eşleşir. `**` tek başına bir segment olarak sıfır veya daha çok klasörle eşleşir (segment içinde geçen `**` tek `*` sayılır). Kural deseni en fazla 256 karakter olabilir.
+- **Dosya sınırları:** Dosya boyutu en çok 256 KiB olabilir; sembolik bağlar (symlink) okunmaz.
+- **Puan ve rapor etkisi:** Bastırılan bulgular sağlık puanı cezasını etkilemez. Raporda "Bastırılan · N" ve ayrıca "Bastırılan gerçek biçimli anahtar · N" sayaçlarında gösterilir.
+
+> **Uyarı:** Güvenilmeyen bir depoyu tararken o depo kendi bulgularını bu dosyayla gizleyebilir; raporlanan bastırılan bulgu sayısını mutlaka inceleyin.
+
+Kural kimliği JSON raporundaki `rule` alanındadır.
+
+**Örnek satırlar:**
+```text
+security.literal-secret tests/fixtures/** # Test senaryolarında kullanılan sahte anahtarlar
+security.sql-construction src/legacy/query.ts:45 # Tablo adı allowlist doğrulamalı sabit metindir
+* docs/examples/* # Belgelerdeki sözde kod örnekleri
+```
+
+### MCP özeti
+
+Model Context Protocol (MCP) üzerinden çağrılan `d54_scan_project` aracı kompakt bir özet döndürür:
+
+- `critical_high`: Önem derecesine göre sıralı en çok 25 öğe (`önem` → `kural` → `dosya` → `satır`).
+- `critical_high_total`: Kritik ve yüksek öncelikli toplam bulgu sayısı.
+- `rule_counts`: Kural bazında `critical`, `high` ve `medium` bulgu sayıları.
+- **Alan kırpma:** Bağlam tasarrufu sağlamak için `evidence`, `impact` ve `advice` alanları en fazla 200 karakterde kesilir; eksiksiz bulgu listesi rapor dosyalarında tutulur.
+- **Git deposu uyarısı:** Hedef bir Git deposuysa ve `reports/` dizini `.gitignore` içinde dışlanmamışsa kapsam notunda uyarı verilir.
 
 ## Model bağlantısı
 
