@@ -208,9 +208,12 @@ describe('araç girdileri', () => {
   });
 
   it('güvenilir modda güven atlama notu üretilmez', async () => {
-    const file = source('package.json', '{"scripts":{"build":"fixture-build"}}');
-    const result = await scanTools(tmpdir(), [file], true, ['errors']);
-    expect(result.notes.join(' ')).not.toContain('Tip/lint/derleme atlandı');
+    const root = await mkdtemp(join(tmpdir(), 'd54-trusted-'));
+    try {
+      const file = source('src/a.ts', '');
+      const result = await scanTools(root, [file], true, ['errors']);
+      expect(result.notes.join(' ')).not.toContain('Tip/lint/derleme atlandı');
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it('büyük dosyalarda ilk 10 yol ve kalan sayısını içeren not üretir', async () => {
