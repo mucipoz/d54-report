@@ -101,7 +101,7 @@ describe('araç girdileri', () => {
     const file = source('package.json', '{"scripts":{"build":"fixture-build"}}');
     const result = await scanTools(tmpdir(), [file], false);
     expect(result.issues).toEqual([]);
-    expect(result.notes).toContain('Tip/lint/derleme atlandı. CLI: --trusted, MCP: D54_MCP_TRUSTED_ROOT=<proje yolu>.');
+    expect(result.notes).toContain('Tip/lint/derleme atlandı. CLI: --trusted; MCP: operatör D54_MCP_TRUSTED_ROOT ayarlar (yalnız incelenmiş proje).');
   });
 
   it('npm kilidinden yalnız adlar, sürümler ve bağımlılık ilişkilerini üretir', async () => {
@@ -246,7 +246,7 @@ describe('araç girdileri', () => {
       const filePkg = source('package.json', '{"name":"app","version":"1.0.0"}');
       const fileLock = source('package-lock.json', '{}');
       const result = await scanTools(root, [filePkg, fileLock], false, ['security']);
-      expect(result.notes.some(n => n.includes('kilit girdisi denetim dışı kaldı (özel kaynak, takma ad veya geçersiz sürüm)'))).toBe(true);
+      expect(result.notes.some(n => n.includes('kilit girdisi denetim dışı kaldı (npm dışı kaynak, takma ad veya geçersiz sürüm)'))).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

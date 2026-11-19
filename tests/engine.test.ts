@@ -210,7 +210,7 @@ it('eyleme dönüştürülen kapsam notlarını coverage içinde raporlar', asyn
     await writeFile(join(root, 'requirements.txt'), 'requests==2.28.0\n');
     await writeFile(join(root, 'huge.js'), Buffer.alloc(1_048_576 + 10, 'x'));
     const scan = await runScan({ path: root, out, browser: false, modules: ['errors', 'security'] });
-    expect(scan.report.coverage).toContain('Tip/lint/derleme atlandı. CLI: --trusted, MCP: D54_MCP_TRUSTED_ROOT=<proje yolu>.');
+    expect(scan.report.coverage).toContain('Tip/lint/derleme atlandı. CLI: --trusted; MCP: operatör D54_MCP_TRUSTED_ROOT ayarlar (yalnız incelenmiş proje).');
     expect(scan.report.coverage).toContain('pip-audit bulunamadı. Kurulum: pipx install pip-audit');
     expect(scan.report.coverage.some(c => c.startsWith('Boyut sınırı nedeniyle içeriği okunmayan: huge.js'))).toBe(true);
   } finally {

@@ -270,7 +270,7 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
   const audits = modules.includes('security'), checks = modules.includes('errors');
   const rustOnly = modules.includes('specialized') && !checks && files.some(f=>basename(f.path)==='Cargo.toml');
   if (rustOnly && !trusted) notes.push('Cargo check ve clippy için güvenilir yerel proje izni gerekir.');
-  if (checks && !trusted) notes.push('Tip/lint/derleme atlandı. CLI: --trusted, MCP: D54_MCP_TRUSTED_ROOT=<proje yolu>.');
+  if (checks && !trusted) notes.push('Tip/lint/derleme atlandı. CLI: --trusted; MCP: operatör D54_MCP_TRUSTED_ROOT ayarlar (yalnız incelenmiş proje).');
   if (!audits && !((checks || rustOnly) && trusted)) return { issues, notes, completion };
   const planned = plan(root, files, notes, audits, checks && trusted, (checks || rustOnly) && trusted);
   const tasks = [...planned.filter(t => t.audit), ...planned.filter(t => !t.audit)];
@@ -290,7 +290,7 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
     try { result = task.audit ? await auditRun(root, task, files, timeout) : await run(task, timeout); }
     catch { notes.push(task.file + ' — ' + task.label + ' çalışma ortamı hazırlanamadı veya temizlenemedi.'); continue; }
     const label = task.file + ' — ' + task.label;
-    if (result.skipped) notes.push(task.file + ' — ' + result.skipped + ' kilit girdisi denetim dışı kaldı (özel kaynak, takma ad veya geçersiz sürüm).');
+    if (result.skipped) notes.push(task.file + ' — ' + result.skipped + ' kilit girdisi denetim dışı kaldı (npm dışı kaynak, takma ad veya geçersiz sürüm).');
     if (result.problem) {
       if (task.command === 'pip-audit' && result.problem === 'araç bulunamadı') {
         notes.push('pip-audit bulunamadı. Kurulum: pipx install pip-audit');
