@@ -40,6 +40,20 @@ it('snapshots only source, excludes reports and withholds environment file conte
   expect(JSON.stringify(files)).not.toContain('PRIVATE_FIXTURE_MARKER');
 });
 
+it('4 MiB kaynak sınırına göre 2 MiB .ts okunur, 5 MiB .ts içeriksiz kalır ve not üretir', async () => {
+  const dir = join(temp, 'size-limit');
+  await mkdir(dir);
+  await writeFile(join(dir, 'two-mb.ts'), 'export const x = "' + 'a'.repeat(2 * 1024 * 1024) + '";\n');
+  const under = await snapshot(dir);
+  expect(under.files.find(f => f.path === 'two-mb.ts')?.text.length).toBeGreaterThan(2 * 1024 * 1024);
+  expect(under.notes.some(n => n.includes('Boyut sınırı'))).toBe(false);
+
+  await writeFile(join(dir, 'five-mb.ts'), 'export const y = "' + 'b'.repeat(5 * 1024 * 1024) + '";\n');
+  const over = await snapshot(dir);
+  expect(over.files.find(f => f.path === 'five-mb.ts')?.text).toBe('');
+  expect(over.notes.some(n => n.includes('Boyut sınırı') && n.includes('five-mb.ts'))).toBe(true);
+});
+
 it('writes matching indexed report artifacts, omits untrusted commands and supports a repeat scan', async () => {
   const complete = vi.fn(async () => JSON.stringify({ findings: [] }));
   const { prefix, report } = await runScan({ path: root, out, provider: { complete }, browser: false });
@@ -107,7 +121,7 @@ it('requires the target advisory tool to finish independently of other source ch
   await expect(verifySourceRescan(root, ['security'], advisory)).resolves.toEqual(expect.any(Array));
   await expect(verifySourceRescan(root, ['security'], { ...finding, file: 'missing.html' })).rejects.toThrow('Hedef kaynak');
   const large = join(root,'large.html');
-  await writeFile(large,' '.repeat(1_048_577));
+  await writeFile(large,' '.repeat(4 * 1024 * 1024 + 1));
   await expect(verifyRescan(root, false, ['security'], { ...finding, file:'large.html' })).rejects.toThrow('Hedef kaynak');
 });
 
@@ -208,7 +222,7 @@ it('eyleme dönüştürülen kapsam notlarını coverage içinde raporlar', asyn
   process.env.PATH = emptyBin;
   try {
     await writeFile(join(root, 'requirements.txt'), 'requests==2.28.0\n');
-    await writeFile(join(root, 'huge.js'), Buffer.alloc(1_048_576 + 10, 'x'));
+    await writeFile(join(root, 'huge.js'), Buffer.alloc(4 * 1024 * 1024 + 10, 'x'));
     const scan = await runScan({ path: root, out, browser: false, modules: ['errors', 'security'] });
     expect(scan.report.coverage).toContain('Tip/lint/derleme atlandı. CLI: --trusted; MCP: operatör D54_MCP_TRUSTED_ROOT ayarlar (yalnız incelenmiş proje).');
     expect(scan.report.coverage).toContain('pip-audit bulunamadı. Kurulum: pipx install pip-audit');

@@ -219,7 +219,7 @@ describe('araç girdileri', () => {
   it('büyük dosyalarda ilk 10 yol ve kalan sayısını içeren not üretir', async () => {
     const root = await mkdtemp(join(tmpdir(), 'd54-large-'));
     try {
-      const bigBuffer = Buffer.alloc(1_048_576 + 10, 'a');
+      const bigBuffer = Buffer.alloc(4 * 1024 * 1024 + 10, 'a');
       for (let i = 1; i <= 12; i++) {
         await writeFile(join(root, `big-${String(i).padStart(2, '0')}.js`), bigBuffer);
       }
