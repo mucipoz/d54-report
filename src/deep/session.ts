@@ -143,6 +143,9 @@ export async function prepareDeepReview(
   const snap = await snapshot(rootReal, outReal);
   const sel = await selectFiles(snap.files, rootReal, { limit: filesLimit, since: o.since });
   const notes = [...snap.notes, ...sel.notes];
+  if (o.since !== undefined) {
+    notes.push('İzlenmeyen yeni dosyalar fark modunda yok; önce git add -N kullanın');
+  }
 
   interface FilePlan {
     file: SourceFile;

@@ -1,8 +1,12 @@
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadSession, prepareDeepReview } from '../src/deep/session.js';
+
+const execFileAsync = promisify(execFile);
 
 describe('deep/session', () => {
   let temp: string;
@@ -115,5 +119,21 @@ describe('deep/session', () => {
     const res = await prepareDeepReview(project, out, {});
     expect(res.summary.files).toContain('src/Svc.java');
     expect(res.summary.files).toContain('src/Auth.kt');
+  });
+
+  it('adds untracked-files scope note in diff mode (--since) and omits it in full mode', async () => {
+    await execFileAsync('git', ['init', project]);
+    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], { cwd: project });
+    await execFileAsync('git', ['config', 'user.name', 'Test'], { cwd: project });
+    await writeFile(join(project, 'src/a.ts'), 'export const a = 1;\n');
+    await execFileAsync('git', ['add', 'src/a.ts'], { cwd: project });
+    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: project });
+
+    const note = 'İzlenmeyen yeni dosyalar fark modunda yok; önce git add -N kullanın';
+    const diffRes = await prepareDeepReview(project, out, { since: 'HEAD' });
+    expect(diffRes.summary.notes).toContain(note);
+
+    const fullRes = await prepareDeepReview(project, out, {});
+    expect(fullRes.summary.notes).not.toContain(note);
   });
 });
