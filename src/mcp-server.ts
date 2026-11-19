@@ -56,7 +56,9 @@ server.registerTool('d54_scan_project',{
   outputSchema:{summary:summarySchema,report_paths:z.object({markdown:z.string(),json:z.string()}),
     critical_high:z.array(findingSchema),critical_high_total:z.number().int().nonnegative(),
     rule_counts:z.record(z.string(),z.number().int().nonnegative()),
-    coverage:z.array(z.string()),browser_unavailable:z.boolean(),scan_incomplete:z.boolean(),modules},
+    coverage:z.array(z.string()),browser_unavailable:z.boolean(),scan_incomplete:z.boolean(),modules,
+    suppressed:z.number().int().nonnegative().optional(),
+    suppressedKnownCredentials:z.number().int().nonnegative().optional()},
   annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true}
 },async ({path,url,use_llm,modules:selected})=>{
   const root=await realpath(resolve(path)),out=join(root,'reports');
@@ -76,10 +78,15 @@ server.registerTool('d54_scan_project',{
       rule_counts[f.rule]=(rule_counts[f.rule]??0)+1;
     }
   }
+  const coverage=report.suppressedKnownCredentials && report.suppressedKnownCredentials>0
+    ? [...report.coverage, `Bastırma dosyası ${report.suppressedKnownCredentials} gerçek biçimli anahtarı gizledi.`]
+    : report.coverage;
   return structured({summary:report.summary, report_paths:{markdown:prefix+'.md',json:prefix+'.json'},
     critical_high:criticalHighAll.slice(0,25).map(f=>({...f,evidence:clip(f.evidence),impact:clip(f.impact),advice:clip(f.advice)})),
-    critical_high_total:criticalHighAll.length,rule_counts,coverage:report.coverage,
-    modules:report.modules ?? [...categories],browser_unavailable:browserUnavailable,scan_incomplete:unavailable});
+    critical_high_total:criticalHighAll.length,rule_counts,coverage,
+    modules:report.modules ?? [...categories],browser_unavailable:browserUnavailable,scan_incomplete:unavailable,
+    ...(report.suppressed!==undefined ? {suppressed:report.suppressed} : {}),
+    ...(report.suppressedKnownCredentials!==undefined ? {suppressedKnownCredentials:report.suppressedKnownCredentials} : {})});
 });
 
 async function approvePR(root:string,patches:{id:string;file:string;patchPath:string}[]): Promise<boolean> {

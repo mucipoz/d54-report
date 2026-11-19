@@ -24,7 +24,8 @@ export function markdown(report: Report): string {
     lines.push('','## '+name,'');
     for (const f of findings) {
       const location = f.file ? f.file+(f.line ? ':'+f.line : '') : [f.url,f.selector,f.viewport].filter(Boolean).join(' · ');
-      lines.push(`- **[${f.id} | ${labels[f.severity]}] ${escape(f.title)}**`, '  - Konum · '+escape(location),
+      const konum = [location, `kural ${f.rule}`].filter(Boolean).map(escape).join(' · ');
+      lines.push(`- **[${f.id} | ${labels[f.severity]}] ${escape(f.title)}**`, '  - Konum · '+konum,
         '  - Sorun · '+escape(f.evidence),'  - Etki · '+escape(f.impact),'  - Çözüm · '+escape(f.advice));
       if (f.screenshot && /^screenshots\/[\w./-]+\.png$/.test(f.screenshot) && !f.screenshot.includes('..')) lines.push('  - [Ekran görüntüsü]('+f.screenshot+')');
     }

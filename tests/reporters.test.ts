@@ -99,4 +99,12 @@ describe('report contract', () => {
     ];
     expect(makeReport(target, [], 1, threeCritical, [], date).summary.health).toBe(60);
   });
+
+  it('includes rule identifier in markdown location line', () => {
+    const report = makeReport(target, [], 1, [
+      issue({ rule: 'security.literal-secret', category: 'security', severity: 'high', file: 'src/app.ts', line: 7 }),
+    ], [], date);
+    const md = markdown(report);
+    expect(md).toContain('  - Konum · src/app.ts:7 · kural security.literal-secret');
+  });
 });

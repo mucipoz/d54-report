@@ -172,7 +172,10 @@ export function applySuppressions(
     );
     if (matched) {
       suppressed++;
-      if (issue.rule === 'security.literal-secret' && issue.evidence === knownCredentialEvidence) {
+      if (
+        (issue.rule === 'security.literal-secret' && issue.evidence === knownCredentialEvidence)
+        || issue.rule === 'security.service-account-key'
+      ) {
         suppressedKnownCredentials++;
       }
     } else {

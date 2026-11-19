@@ -36,6 +36,8 @@ interface ScanResponse {
   coverage: string[];
   browser_unavailable: boolean;
   scan_incomplete: boolean;
+  suppressed?: number;
+  suppressedKnownCredentials?: number;
 }
 interface FixResponse {
   patch_paths: string[];
@@ -221,6 +223,27 @@ it('warns when reports dir not ignored', async () => {
       expect(scan2.isError, JSON.stringify(scan2.content)).not.toBe(true);
       const res2 = scan2.structuredContent as unknown as ScanResponse;
       expect(res2.coverage).not.toContain("reports/ klasörü git tarafından dışlanmıyor. .gitignore'a 'reports/' ekleyin.");
+    });
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it('returns suppressed and suppressedKnownCredentials and notes suppressed known credentials in coverage', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-suppress-'));
+  try {
+    const awsKey = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+    await writeFile(join(temp, 'keys.ts'), `export const k = "${awsKey}";\n`);
+    await writeFile(join(temp, 'page.html'), original);
+    await writeFile(join(temp, '.d54report-ignore'), '* ** # her şeyi gizle\n');
+    await withMcpClient(temp, async client => {
+      const scan = await client.callTool({ name: 'd54_scan_project', arguments: { path: temp, modules: ['security'] } });
+      expect(scan.isError, JSON.stringify(scan.content)).not.toBe(true);
+      const res = scan.structuredContent as unknown as ScanResponse;
+      expect(res.summary.total).toBe(0);
+      expect(res.suppressed).toBeGreaterThanOrEqual(2);
+      expect(res.suppressedKnownCredentials).toBe(1);
+      expect(res.coverage).toContain('Bastırma dosyası 1 gerçek biçimli anahtarı gizledi.');
     });
   } finally {
     await rm(temp, { recursive: true, force: true });

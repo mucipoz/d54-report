@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { staticAudit } from '../src/engine.js';
@@ -92,6 +92,56 @@ describe('şifre kuralı', () => {
   it('mapbox secret token stays high', () => {
     const fakeSk = ['sk', 'eyJ1Ijo1234567890', 'AbCd9876EfGh5432'].join('.');
     const issues = secretIssues('src/maps.ts', `const accessToken = "${fakeSk}";`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('flags slash-prefixed base64 secret as high while skipping lowercase routes', () => {
+    const base64Secret = ['/', 'Xk2aBcDef123456GhI'].join('');
+    const issues = secretIssues('.env', `JWT_SECRET=${base64Secret}`);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('high');
+  });
+
+  it('downgrades locale json label words to low while keeping known credentials high', () => {
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    const labelIssues = secretIssues('apps/web/i18n/translations/en.json', '{"password": "Password"}');
+    expect(labelIssues).toHaveLength(1);
+    expect(labelIssues[0]?.severity).toBe('low');
+
+    const knownIssues = secretIssues('apps/web/i18n/translations/en.json', `{"password": "Password", "k": "${fakeAws}"}`);
+    expect(knownIssues.some(i => i.severity === 'high' && i.evidence === knownCredentialEvidence)).toBe(true);
+  });
+
+  it('keeps workflow step env outside services as high', () => {
+    const workflow = [
+      'jobs:',
+      '  deploy:',
+      '    services:',
+      '      db:',
+      '        env:',
+      '          MARIADB_ROOT_PASSWORD: integration-only',
+      '    steps:',
+      '      - name: Deploy',
+      '        env:',
+      '          DEPLOY_PASSWORD: supersecretvalue',
+    ].join('\n');
+    const issues = secretIssues('.github/workflows/deploy.yml', workflow);
+    expect(issues.filter(i => i.severity === 'low')).toHaveLength(1);
+    expect(issues.filter(i => i.severity === 'high')).toHaveLength(1);
+  });
+
+  it('keeps known credential inside workflow services as high', () => {
+    const fakeAws = ['AKIA', 'X'.repeat(16)].join('');
+    const workflow = [
+      'jobs:',
+      '  test:',
+      '    services:',
+      '      db:',
+      '        env:',
+      `          AWS_ACCESS_KEY_ID: ${fakeAws}`,
+    ].join('\n');
+    const issues = secretIssues('.github/workflows/ci.yml', workflow);
     expect(issues).toHaveLength(1);
     expect(issues[0]?.severity).toBe('high');
   });
@@ -308,7 +358,7 @@ describe('ölçüm seti', () => {
         .map(i => ({ file: i.file, rule: i.rule, severity: i.severity }))
         .sort((a, b) => issueKey(a).localeCompare(issueKey(b)));
 
-      const expectedRaw = await readFile(resolve('tests/precision/expected.json'), 'utf8');
+      const expectedRaw = await readFile(new URL('./precision/expected.json', import.meta.url), 'utf8');
       const expected = (JSON.parse(expectedRaw) as ExpectedIssue[])
         .slice()
         .sort((a, b) => issueKey(a).localeCompare(issueKey(b)));

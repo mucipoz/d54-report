@@ -186,3 +186,18 @@ it.each([['--ids', ','], ['--severity', '']])('rejects an empty %s selection bef
   expect((await readdir(out, { recursive: true })).filter(path => path.endsWith('.patch'))).toEqual([]);
   expect(await readFile(join(root, 'index.html'), 'utf8')).toBe(original);
 });
+
+it('warns about unignored output directory only when inside target root using relative path', async () => {
+  await promisify(execFile)('git', ['init'], { cwd: root });
+  const outsideOut = join(temp, 'outside-reports');
+  const outsideRes = await runScan({ path: root, out: outsideOut, browser: false, modules: ['security'] });
+  expect(outsideRes.report.coverage.some(c => c.includes('dışlanmıyor'))).toBe(false);
+
+  const customOut = join(root, 'custom-out');
+  const unignoredRes = await runScan({ path: root, out: customOut, browser: false, modules: ['security'] });
+  expect(unignoredRes.report.coverage).toContain("custom-out/ klasörü git tarafından dışlanmıyor. .gitignore'a 'custom-out/' ekleyin.");
+
+  await writeFile(join(root, '.gitignore'), 'custom-out/\n');
+  const ignoredRes = await runScan({ path: root, out: customOut, browser: false, modules: ['security'] });
+  expect(ignoredRes.report.coverage.some(c => c.includes('dışlanmıyor'))).toBe(false);
+});

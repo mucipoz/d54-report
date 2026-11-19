@@ -1,4 +1,4 @@
-import { basename, resolve } from 'node:path';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { lstat, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { snapshot, technology } from './source.js';
@@ -189,9 +189,12 @@ export async function runScan(o:ScanOptions) {
       }
     }
     if (target.root) {
-      const git = await gitState(target.root);
-      if (git && !(await git.isIgnored('reports/x'))) {
-        notes.push("reports/ klasörü git tarafından dışlanmıyor. .gitignore'a 'reports/' ekleyin.");
+      const relOut = relative(target.root, await realpath(out)).replaceAll(sep, '/');
+      if (relOut && relOut !== '..' && !isAbsolute(relOut) && !relOut.startsWith('../')) {
+        const git = await gitState(target.root);
+        if (git && !(await git.isIgnored(relOut + '/x'))) {
+          notes.push(`${relOut}/ klasörü git tarafından dışlanmıyor. .gitignore'a '${relOut}/' ekleyin.`);
+        }
       }
     }
     const report: Report = {

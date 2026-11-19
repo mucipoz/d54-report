@@ -20,7 +20,7 @@ function literalCredential(name: string, value: string): boolean {
     && !/^(?:https?:\/\/|process\.env\.|os\.(?:environ|getenv)|env\()/.test(trimmed)
     && !trimmed.startsWith('pk.')
     && !trimmed.endsWith('.apps.googleusercontent.com')
-    && !trimmed.startsWith('/')
+    && !/^\/[a-z0-9_\-./:{}[\]]*$/.test(trimmed)
     && !/\s/.test(trimmed)
     && !(trimmed.length <= 60 && dotPath.test(trimmed));
 }
@@ -79,7 +79,9 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
   const issues: Issue[] = [];
   const script = isScript(file.path);
   const testFile = isTestPath(file.path);
-  const workflowFile = /(?:^|\/)\.github\/workflows\//.test(file.path.replace(/\\/g, '/'));
+  const normalizedPath = file.path.replace(/\\/g, '/');
+  const workflowFile = /(?:^|\/)\.github\/workflows\//.test(normalizedPath);
+  const localeFile = /(?:^|\/)(?:i18n|locales?|translations?|lang)\/(?:.*\/)?[^/]+\.json$/i.test(normalizedPath);
   const env = /^\.env(?:\.|$)/i.test(basename(file.path));
   const settings = env || /\.(?:json|ya?ml|toml|ini|properties|conf|py|php|rb|rs)$/i.test(file.path);
   const seen = new Set<string>();
@@ -133,7 +135,7 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
         const value = match[2] ?? match[3] ?? match[4] ?? '';
         if ((match[2] !== undefined || match[3] !== undefined || env || /\.(?:ya?ml|ini|properties|conf)$/i.test(file.path))
             && literalCredential(match[1]!, value)) {
-          secret(number, testFile || inServices ? 'low' : 'high');
+          secret(number, testFile || inServices || localeFile ? 'low' : 'high');
         }
       }
     }

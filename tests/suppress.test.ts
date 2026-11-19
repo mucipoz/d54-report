@@ -127,6 +127,17 @@ describe('suppress', () => {
     expect(knownCredentialEvidence).toBe('Bilinen bir anahtar biçimi bulundu (AWS/GitHub/Slack/özel anahtar). Değer gizlendi.');
   });
 
+  it('counts suppressed security.service-account-key in suppressedKnownCredentials', () => {
+    const result = applySuppressions([
+      makeIssue({ rule: 'security.service-account-key', file: 'sa.json', line: 4, severity: 'critical' }),
+    ], [
+      { rule: 'security.service-account-key', path: 'sa.json', reason: 'sahte test anahtarı' },
+    ]);
+    expect(result.suppressed).toBe(1);
+    expect(result.suppressedKnownCredentials).toBe(1);
+    expect(result.kept).toEqual([]);
+  });
+
   it('treats dots literally and rejects patterns over 256 chars', async () => {
     const dotIssues = [
       makeIssue({ file: 'a.b' }),
