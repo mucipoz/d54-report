@@ -135,7 +135,7 @@ the default branch. [Scan workflow](templates/github-action-d54-report.yml) ·
 ### Key scan features
 
 - **False-positive reduction:** Public prefixes (`NEXT_PUBLIC_`, `VITE_`, etc.), paths, spaced strings, and dot-notation paths are skipped; recognized key formats (AWS, GitHub, Slack) stay `high`; tracked service account JSONs trigger `critical` while gitignored copies drop to `low`.
-- **Capped health score:** Penalties are calculated with strict caps per severity (Critical 40, High 30, Medium 20, Low 10) on a 100-point scale (`puan = 100 - penalty`).
+- **Capped health score:** Penalties are calculated with strict caps per severity (Critical 30, High 20, Medium 10, Low 5; worst score 35) on a 100-point scale (`puan = 100 - penalty`).
 - **Suppression file (`.d54report-ignore`):** Findings can be excluded via `<rule|*> <path-glob>[:line] # <reason>` in the target root. Reasons are mandatory; suppressed counts and suppressed real credentials are explicitly tracked.
 - **Compact MCP summary:** `d54_scan_project` caps critical/high findings at 25 items and truncates evidence/impact/advice to 200 characters to conserve agent context.
 
@@ -217,7 +217,7 @@ incelenmiş yerel projede). `--trusted` TypeScript, mypy, PHP lint, PHPStan,
 cargo check/clippy/build ve tanımlı npm build gibi proje komutlarını
 etkinleştirir. Bu komutlar proje kodunu ve yapılandırmasını kullanabilir. Kaynak
 toplamada sembolik bağlantılar ve derleme dizinleri atlanır. Dosya içeriği
-başına 1 MiB ve toplamda 48 MiB okuma bütçesi vardır. Büyük dosyalar veya kilit
+başına 4 MiB ve toplamda 48 MiB okuma bütçesi vardır. Büyük dosyalar veya kilit
 dosyaları genel kaynak taramasına yalnız boyut bilgisiyle girebilir.
 
 ### Yanlış alarm azaltma
@@ -242,10 +242,12 @@ $$\text{puan} = 100 - \text{penalty}$$
 
 | Önem Seviyesi | Ağırlık (Ceza / Adet) | Tavan Ceza |
 | ------------- | :-------------------: | :--------: |
-| `critical`    | 15                    | 40         |
-| `high`        | 7                     | 30         |
-| `medium`      | 3                     | 20         |
-| `low`         | 1                     | 10         |
+| `critical`    | 15                    | 30         |
+| `high`        | 7                     | 20         |
+| `medium`      | 3                     | 10         |
+| `low`         | 1                     | 5          |
+
+Tavanların toplamı 65 olduğundan en kötü puan 35'tir.
 
 ### Bulgu bastırma (.d54report-ignore)
 

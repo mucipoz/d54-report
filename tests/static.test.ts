@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import { scan as specialized } from '../src/scanners/specialized.js';
 import { prepareAudit } from '../src/scanners/audit-input.js';
 import { scanTools } from '../src/scanners/tooling.js';
 import { snapshot } from '../src/source.js';
+import { toolFix } from '../src/fixer/deterministic-fixer.js';
 
 function source(path: string, text: string): SourceFile {
   return { path, text, size: Buffer.byteLength(text) };
@@ -219,7 +220,7 @@ describe('araç girdileri', () => {
   it('büyük dosyalarda ilk 10 yol ve kalan sayısını içeren not üretir', async () => {
     const root = await mkdtemp(join(tmpdir(), 'd54-large-'));
     try {
-      const bigBuffer = Buffer.alloc(1_048_576 + 10, 'a');
+      const bigBuffer = Buffer.alloc(4 * 1024 * 1024 + 10, 'a');
       for (let i = 1; i <= 12; i++) {
         await writeFile(join(root, `big-${String(i).padStart(2, '0')}.js`), bigBuffer);
       }
@@ -286,5 +287,95 @@ describe('araç girdileri', () => {
       expect(yarnRes.notes.some(n => n.includes('apps/api/package.json') && n.includes('pnpm/yarn kilidi desteklenmiyor; npm danışmanlık denetimi atlandı'))).toBe(true);
       expect(yarnRes.completion).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('bağımlılık uyarılarını paket başına tek bulguda gruplar ve npmFix temsilci kısıtını korur', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-pkg-group-'));
+    const fakeBin = await mkdtemp(join(tmpdir(), 'd54-npm-bin-'));
+    const work = await mkdtemp(join(tmpdir(), 'd54-npm-work-'));
+    const prevPath = process.env.PATH;
+    process.env.PATH = fakeBin;
+    try {
+      const pkgJson = JSON.stringify({ name: 'app', version: '1.0.0', dependencies: { '@xmldom/xmldom': '^0.8.6', semver: '^7.3.8' } });
+      const lockBefore = JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'app', version: '1.0.0', dependencies: { '@xmldom/xmldom': '^0.8.6', semver: '^7.3.8' } },
+          'node_modules/@xmldom/xmldom': { version: '0.8.6', resolved: 'https://registry.npmjs.org/@xmldom/xmldom/-/xmldom-0.8.6.tgz' },
+          'node_modules/semver': { version: '7.3.8', resolved: 'https://registry.npmjs.org/semver/-/semver-7.3.8.tgz' },
+        },
+      });
+      await writeFile(join(root, 'package.json'), pkgJson);
+      await writeFile(join(root, 'package-lock.json'), lockBefore);
+
+      const npmScript = `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+if (args[0] === 'audit' && args[1] === 'fix') {
+  lock.packages['node_modules/@xmldom/xmldom'].version = '0.8.10';
+  fs.writeFileSync('package-lock.json', JSON.stringify(lock));
+  process.stdout.write(JSON.stringify({ vulnerabilities: {} }));
+  process.exit(0);
+}
+const fixed = lock.packages['node_modules/@xmldom/xmldom']?.version === '0.8.10';
+const vulnerabilities = fixed ? {
+  semver: {
+    name: 'semver',
+    severity: 'moderate',
+    via: [{ url: 'https://github.com/advisories/GHSA-c2qf-rxjj-qqgw', severity: 'moderate' }],
+    fixAvailable: { name: 'semver', version: '7.5.2' }
+  }
+} : {
+  '@xmldom/xmldom': {
+    name: '@xmldom/xmldom',
+    severity: 'high',
+    via: [
+      { url: 'https://github.com/advisories/GHSA-2222-2222-2222', severity: 'moderate' },
+      { url: 'https://github.com/advisories/GHSA-w7q9-p3jq-fmhm', severity: 'high' },
+      { url: 'https://github.com/advisories/GHSA-crh6-fp67-6883', severity: 'high' }
+    ],
+    fixAvailable: { name: '@xmldom/xmldom', version: '0.8.10' }
+  },
+  semver: {
+    name: 'semver',
+    severity: 'moderate',
+    via: [{ url: 'https://github.com/advisories/GHSA-c2qf-rxjj-qqgw', severity: 'moderate' }],
+    fixAvailable: { name: 'semver', version: '7.5.2' }
+  }
+};
+process.stdout.write(JSON.stringify({ vulnerabilities }));
+process.exit(1);
+`;
+      const npmBin = join(fakeBin, 'npm');
+      await writeFile(npmBin, npmScript);
+      await chmod(npmBin, 0o755);
+
+      const files = [source('package.json', pkgJson), source('package-lock.json', '')];
+      const result = await scanTools(root, files, false, ['security']);
+      expect(result.issues).toHaveLength(2);
+
+      const xmldom = result.issues.find(i => i.title.includes('@xmldom/xmldom'));
+      expect(xmldom).toBeDefined();
+      expect(xmldom!.severity).toBe('high');
+      expect(xmldom!.title).toBe('Bağımlılık uyarısı @xmldom/xmldom GHSA-crh6-fp67-6883 (+2)');
+      expect(xmldom!.evidence).toBe('npm audit çıktısında 3 eşleşme bulundu. Kimlikler: GHSA-2222-2222-2222, GHSA-crh6-fp67-6883, GHSA-w7q9-p3jq-fmhm');
+      expect(xmldom!.advice).toContain('0.8.10');
+
+      const semver = result.issues.find(i => i.title.includes('semver'));
+      expect(semver).toBeDefined();
+      expect(semver!.severity).toBe('medium');
+      expect(semver!.title).toBe('Bağımlılık uyarısı semver GHSA-c2qf-rxjj-qqgw');
+
+      const patched = toolFix(root, work, 'package-lock.json', xmldom!);
+      expect(patched).toContain('"version":"0.8.10"');
+    } finally {
+      process.env.PATH = prevPath;
+      await rm(work, { recursive: true, force: true });
+      await rm(fakeBin, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

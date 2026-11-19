@@ -67,22 +67,36 @@ describe('report contract', () => {
       ...Array.from({ length: 10 }, (_, line) => issue({ severity: 'medium', line: line + 100 })),
       ...Array.from({ length: 20 }, (_, line) => issue({ severity: 'low', line: line + 1000 })),
     ];
-    expect(makeReport(target, [], 1, many, [], date).summary.health).toBe(0);
+    expect(makeReport(target, [], 1, many, [], date).summary.health).toBe(35);
   });
 
   it('applies per-severity penalty caps to health calculation', () => {
-    // 5000 low only → health 90
-    const lowOnly = Array.from({ length: 5000 }, (_, i) => issue({ severity: 'low', line: i + 1 }));
-    expect(makeReport(target, [], 1, lowOnly, [], date).summary.health).toBe(90);
+    // bulgusuz → 100
+    expect(makeReport(target, [], 0, [], [], date).summary.health).toBe(100);
 
-    // 1 critical + 146 high + 298 medium + 4447 low → health 25 (100 - 15 - 30 - 20 - 10)
-    const mixed = [
+    // tek kritik → 85
+    expect(makeReport(target, [], 1, [issue({ severity: 'critical', line: 1 })], [], date).summary.health).toBe(85);
+
+    // 2 kritik + 1 yüksek → 63
+    const twoCritOneHigh = [
       issue({ severity: 'critical', line: 1 }),
-      ...Array.from({ length: 146 }, (_, i) => issue({ severity: 'high', line: i + 2 })),
-      ...Array.from({ length: 298 }, (_, i) => issue({ severity: 'medium', line: i + 150 })),
-      ...Array.from({ length: 4447 }, (_, i) => issue({ severity: 'low', line: i + 500 })),
+      issue({ severity: 'critical', line: 2 }),
+      issue({ severity: 'high', line: 3 }),
     ];
-    expect(makeReport(target, [], 1, mixed, [], date).summary.health).toBe(25);
+    expect(makeReport(target, [], 1, twoCritOneHigh, [], date).summary.health).toBe(63);
+
+    // 3/119/357/4577 → health 35 (100 - 30 - 20 - 10 - 5)
+    const saturated = [
+      ...Array.from({ length: 3 }, (_, i) => issue({ severity: 'critical', line: i + 1 })),
+      ...Array.from({ length: 119 }, (_, i) => issue({ severity: 'high', line: i + 10 })),
+      ...Array.from({ length: 357 }, (_, i) => issue({ severity: 'medium', line: i + 200 })),
+      ...Array.from({ length: 4577 }, (_, i) => issue({ severity: 'low', line: i + 1000 })),
+    ];
+    expect(makeReport(target, [], 1, saturated, [], date).summary.health).toBe(35);
+
+    // 5000 low only → health 95
+    const lowOnly = Array.from({ length: 5000 }, (_, i) => issue({ severity: 'low', line: i + 1 }));
+    expect(makeReport(target, [], 1, lowOnly, [], date).summary.health).toBe(95);
 
     // 2 high → 86
     const twoHigh = [
@@ -91,13 +105,13 @@ describe('report contract', () => {
     ];
     expect(makeReport(target, [], 1, twoHigh, [], date).summary.health).toBe(86);
 
-    // 3 critical → 60
+    // 3 critical → 70
     const threeCritical = [
       issue({ severity: 'critical', line: 1 }),
       issue({ severity: 'critical', line: 2 }),
       issue({ severity: 'critical', line: 3 }),
     ];
-    expect(makeReport(target, [], 1, threeCritical, [], date).summary.health).toBe(60);
+    expect(makeReport(target, [], 1, threeCritical, [], date).summary.health).toBe(70);
   });
 
   it('includes rule identifier in markdown location line', () => {

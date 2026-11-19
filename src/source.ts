@@ -7,6 +7,7 @@ const ignored = new Set(['.git', '.hg', '.svn', 'node_modules', 'target', 'dist'
 const sourceExt = /^(?:\.[cm]?[jt]sx?|\.pyi?|\.rs|\.php|\.html?|\.css|\.scss|\.vue|\.svelte|\.jsonc?|\.toml|\.ya?ml|\.txt|\.ini|\.xml|\.sql|\.lock|\.env|\.pem|\.key)$/i;
 const assetExt = /\.(?:png|jpe?g|webp|avif|gif|svg|woff2?|ttf|ico|gltf|glb)$/i;
 const lock = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|composer\.lock|poetry\.lock)$/;
+const MAX_SOURCE_FILE_BYTES = 4 * 1024 * 1024;
 export async function snapshot(root: string, excluded?: string) {
   root = await realpath(root);
   const files: SourceFile[] = [];
@@ -36,9 +37,9 @@ export async function snapshot(root: string, excluded?: string) {
         const size = info.size;
         if (bundlesOnly && (size <= 1_048_576 || !/\.(?:[cm]?js|css|png|jpe?g|svg|glb|gltf|webp)$/i.test(name))) continue;
         const metadataOnly = bundlesOnly || assetExt.test(name) || lock.test(path) || /^\.env(?:$|\.(?!example$|sample$|template$))/.test(name) || /\.(key|pem)$/.test(name);
-        const tooLarge = size > 1_048_576 || bytes + size > 48 * 1024 * 1024;
+        const tooLarge = size > MAX_SOURCE_FILE_BYTES || bytes + size > 48 * 1024 * 1024;
         if (tooLarge && !metadataOnly) { skipped++; largeFiles.push(path); }
-        const body = metadataOnly || tooLarge ? '' : (await readBoundedFile(full, Math.min(1_048_576, 48 * 1024 * 1024 - bytes))).toString('utf8');
+        const body = metadataOnly || tooLarge ? '' : (await readBoundedFile(full, Math.min(MAX_SOURCE_FILE_BYTES, 48 * 1024 * 1024 - bytes))).toString('utf8');
         bytes += Buffer.byteLength(body);
         files.push({ path, text: body, size });
       } catch { unreadable++; }
