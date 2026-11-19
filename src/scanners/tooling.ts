@@ -290,7 +290,7 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
     try { result = task.audit ? await auditRun(root, task, files, timeout) : await run(task, timeout); }
     catch { notes.push(task.file + ' — ' + task.label + ' çalışma ortamı hazırlanamadı veya temizlenemedi.'); continue; }
     const label = task.file + ' — ' + task.label;
-    if (result.skipped) notes.push(task.file + ' — ' + result.skipped + ' kilit girdisi denetim dışı kaldı (npm dışı kaynak, takma ad veya geçersiz sürüm).');
+    if (result.skipped) notes.push(task.file + ' — ' + result.skipped + ' kilit girdisi denetim dışı kaldı (npm dışı kaynak, geçersiz ad/sürüm veya atlanan üst paket).');
     if (result.problem) {
       if (task.command === 'pip-audit' && result.problem === 'araç bulunamadı') {
         notes.push('pip-audit bulunamadı. Kurulum: pipx install pip-audit');

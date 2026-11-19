@@ -246,7 +246,7 @@ describe('araç girdileri', () => {
       const filePkg = source('package.json', '{"name":"app","version":"1.0.0"}');
       const fileLock = source('package-lock.json', '{}');
       const result = await scanTools(root, [filePkg, fileLock], false, ['security']);
-      expect(result.notes.some(n => n.includes('kilit girdisi denetim dışı kaldı (npm dışı kaynak, takma ad veya geçersiz sürüm)'))).toBe(true);
+      expect(result.notes.some(n => n.includes('kilit girdisi denetim dışı kaldı (npm dışı kaynak, geçersiz ad/sürüm veya atlanan üst paket)'))).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
