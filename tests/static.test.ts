@@ -10,6 +10,7 @@ import { scan as bugs } from '../src/scanners/bugs.js';
 import { scan as specialized } from '../src/scanners/specialized.js';
 import { prepareAudit } from '../src/scanners/audit-input.js';
 import { scanTools } from '../src/scanners/tooling.js';
+import { snapshot } from '../src/source.js';
 
 function source(path: string, text: string): SourceFile {
   return { path, text, size: Buffer.byteLength(text) };
@@ -96,11 +97,11 @@ describe('araç girdileri', () => {
       await expect(readFile(join(output, 'Cargo.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
-  it('varsayılan modda proje derleme betiğini atlar', async () => {
+  it('varsayılan modda proje derleme betiğini atlar ve yönlendirici not üretir', async () => {
     const file = source('package.json', '{"scripts":{"build":"fixture-build"}}');
     const result = await scanTools(tmpdir(), [file], false);
     expect(result.issues).toEqual([]);
-    expect(result.notes.join(' ')).toContain('derleme araçları atlandı');
+    expect(result.notes).toContain('Tip/lint/derleme atlandı. CLI: --trusted, MCP: D54_MCP_TRUSTED_ROOT=<proje yolu>.');
   });
 
   it('npm kilidinden yalnız adlar, sürümler ve bağımlılık ilişkilerini üretir', async () => {
@@ -186,6 +187,50 @@ describe('araç girdileri', () => {
       expect(aliasEntry?.version).toBe('7.24.0');
       expect(aliasEntry?.name).toBe('@babel/traverse');
       expect(lock.packages['node_modules/bad-alias']).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('pip-audit bulunamadığında kurulum talimatı içeren not üretir', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-pip-'));
+    try {
+      await writeFile(join(root, 'requirements.txt'), 'requests==2.28.0\n');
+      const file = source('requirements.txt', 'requests==2.28.0\n');
+      const result = await scanTools(root, [file], false, ['security']);
+      expect(result.notes).toContain('pip-audit bulunamadı. Kurulum: pipx install pip-audit');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('büyük dosyalarda ilk 10 yol ve kalan sayısını içeren not üretir', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-large-'));
+    try {
+      const bigBuffer = Buffer.alloc(1_048_576 + 10, 'a');
+      for (let i = 1; i <= 12; i++) {
+        await writeFile(join(root, `big-${String(i).padStart(2, '0')}.js`), bigBuffer);
+      }
+      const result = await snapshot(root);
+      const largeNote = result.notes.find(n => n.startsWith('Boyut sınırı nedeniyle içeriği okunmayan:'));
+      expect(largeNote).toBeDefined();
+      expect(largeNote).toContain('big-01.js');
+      expect(largeNote).toContain('big-10.js');
+      expect(largeNote).toContain('(+2)');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('atlanan kilit girdileri için güncel coverage notu üretir', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-audit-note-'));
+    try {
+      await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0' }));
+      await writeFile(join(root, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'app', version: '1.0.0' },
+          'node_modules/internal-pkg': { version: '1.0.0', resolved: 'https://npm.internal.example/internal-pkg.tgz' },
+        },
+      }));
+      const filePkg = source('package.json', '{"name":"app","version":"1.0.0"}');
+      const fileLock = source('package-lock.json', '{}');
+      const result = await scanTools(root, [filePkg, fileLock], false, ['security']);
+      expect(result.notes.some(n => n.includes('kilit girdisi denetim dışı kaldı (özel kaynak, takma ad veya geçersiz sürüm)'))).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
