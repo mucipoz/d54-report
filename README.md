@@ -18,7 +18,7 @@ gerekmez.
 [English quick start](#english-quick-start) · [Kapsam](#tarama-kapsamı) ·
 [Model bağlantısı](#model-bağlantısı) · [Düzeltme](#düzeltme) ·
 [GitHub Actions](#github-actions) · [MCP sunucusu](#mcp-sunucusu) ·
-[Ajanlar](AGENT.md)
+[Derin inceleme](#derin-inceleme-ajan-modu) · [Ajanlar](AGENT.md)
 
 ## Hızlı başlangıç
 
@@ -563,6 +563,66 @@ use the returned `report_paths.json` for `d54_fix_findings` or
 `report_paths.markdown` for `d54_get_report`. For a preview, supply
 `dry_run: true`. Use the status of each result to distinguish saved patches
 from completed verification. [Agent contract](AGENT.md)
+
+## Derin inceleme (ajan modu)
+
+Derin incelemenin ajan modu tamamen ücretsizdir: D54 Report dışarıya model
+çağrısı yapmaz ve `D54_API_KEY` gerektirmez; inceleme, aracı çalıştıran
+kodlama ajanının (Claude Code, Codex vb.) kendi aboneliği üzerinden yürütülür.
+
+1. **Hazırlama (`d54_deep_review_prepare` / `d54-report deep prepare`):** Risk
+   puanı yüksek dosyaları (veya `--since <ref>` ile yalnız değişen aralıkları)
+   seçer, fonksiyonları AST ve pencerelerle böler, gerçek sır biçimlerini
+   `<gizli satır>` olarak maskeler ve satır numaralı parçaları
+   `<rapor-dizini>/deep/<oturum>/chunk-NN.txt` dosyalarına yazar.
+2. **İnceleme ve şüpheci doğrulama:** Ajan parça dosyalarını okur, mantık ve
+   işlevsellik adaylarını çıkarır, her adayı ayrı bir doğrulama adımıyla
+   çürütmeye çalışır ve yalnız `confirmed` olanları gönderir.
+3. **Denetim ve birleştirme (`d54_deep_review_submit` / `d54-report deep submit`):**
+   D54 Report oturum kimliğini, kaynak dosyanın SHA-256 özetini (`kaynak değişti`),
+   parça satır aralığını, gizli satır yasağını, boşluk normalleştirilmiş birebir
+   `quote` eşleşmesini, metin sınırlarını ve önem tavanını (`critical` yalnız
+   `authz` ve `business-rule`, diğerlerinde en çok `high`) denetler. Geçerli
+   bulgular `Derin inceleme (ajan)` başlığıyla en son rapora birleştirilir ve
+   sağlık puanı yeniden hesaplanır.
+
+```bash
+d54-report deep prepare --path ./demo-app --out ./reports/demo
+d54-report deep submit --path ./demo-app --session <oturum> \
+  --findings ./findings.json --out ./reports/demo
+```
+
+**Sınırlar:** D54 Report ajanın ikinci doğrulamayı gerçekten yaptığını
+kanıtlayamaz (ajan doğrulamasını kanıtlayamaz); buna karşılık uydurma satır,
+değişmiş dosya, gizli satır ve eşleşmeyen kod alıntılarını kesin olarak
+reddeder. Doğrudan `D54_API_KEY` ile model çağıran API modu sonraki sürümde
+gelecektir.
+
+### Deep review (agent mode)
+
+Agent-mode deep review is free on the D54 Report side: D54 Report makes no
+external model calls and needs no API key, relying instead on the calling
+coding agent's own subscription (Claude Code, Codex, etc.).
+
+1. **Prepare (`d54_deep_review_prepare` / `d54-report deep prepare`):** Ranks
+   risky source files (or `--since <ref>` diff hunks), chunks functions via AST
+   and sliding windows, masks secret-formatted lines as `<gizli satır>`, and
+   writes numbered `chunk-NN.txt` files plus `session.json` under
+   `<out>/deep/<session>/`.
+2. **Agent verification:** The agent inspects the chunk files, tries to refute
+   each candidate in a separate skeptical check, and submits only `confirmed`
+   defects.
+3. **Submit (`d54_deep_review_submit` / `d54-report deep submit`):** D54 Report
+   enforces session path safety, unchanged file SHA-256 hashes, chunk line
+   bounds, unmasked lines, whitespace-normalized `quote` matching, text/secret
+   filters, and severity caps (`critical` only for `authz` and `business-rule`),
+   then merges accepted findings into the latest report and recomputes health.
+
+**Limitations:** D54 Report cannot prove that the agent performed an
+independent verification pass ("ajan doğrulamasını kanıtlayamaz"), so it
+enforces strict line, hash, and exact-quote checks and labels findings with
+`Derin inceleme (ajan)`. Direct provider-backed API mode will arrive in the
+next release.
 
 ## Lisans / License
 

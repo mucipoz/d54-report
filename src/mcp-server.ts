@@ -11,6 +11,8 @@ import { findingSchema, findingId, summarySchema, readMarkdown, readReport } fro
 import { runScan, verifyRescan, verifySourceRescan } from './engine.js';
 import { runFix } from './fixer/index.js';
 import { loadProvider } from './llm/provider.js';
+import { prepareDeepReview } from './deep/session.js';
+import { submitDeepReview } from './deep/submit.js';
 
 // Keep the original stdout writer exclusively for the SDK transport.
 // Scanner/library console output, raw stdout.write and Node warnings go to stderr.
@@ -39,7 +41,7 @@ function structured<T extends Record<string, unknown>>(value:T) {
   return {structuredContent:value,content:[{type:'text' as const,text:JSON.stringify(value)}]};
 }
 async function regularOutput(out:string) {
-  for (const path of [out,join(out,'screenshots'),join(out,'patches')]) {
+  for (const path of [out,join(out,'screenshots'),join(out,'patches'),join(out,'deep')]) {
     try { if (!(await lstat(path)).isDirectory()) throw Error('Rapor çıktı yolu bir dizin olmalıdır.'); }
     catch(e) { if ((e as NodeJS.ErrnoException).code!=='ENOENT') throw e; }
   }
@@ -133,6 +135,63 @@ server.registerTool('d54_get_report',{
   description:'Return the complete saved Markdown from its .md file or the companion of a JSON report.',
   inputSchema:{report_path:filePath},annotations:{readOnlyHint:true,idempotentHint:true,openWorldHint:false}
 },async ({report_path})=>({content:[{type:'text',text:await readMarkdown(resolve(report_path))}]}));
+
+server.registerTool('d54_deep_review_prepare',{
+  title:'Prepare deep logic review chunks for agent verification',
+  description:'Select high-risk files, chunk functions, mask secrets, and write numbered chunk files into the project reports directory without calling an external model.',
+  inputSchema:{
+    path:filePath,
+    since:z.string().trim().min(1).max(100).optional(),
+    deep_files:z.number().int().min(1).max(20).optional(),
+    max_chunks:z.number().int().min(1).max(200).optional(),
+  },
+  outputSchema:{
+    session:z.string(),
+    chunk_files:z.array(z.string()),
+    summary:z.object({
+      files:z.array(z.string()),
+      chunks:z.number().int().nonnegative(),
+      skippedMasked:z.number().int().nonnegative(),
+      notes:z.array(z.string()),
+    }),
+    instructions:z.string(),
+  },
+  annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
+},async ({path,since,deep_files,max_chunks})=>{
+  const root=await realpath(resolve(path)),out=join(root,'reports');
+  await regularOutput(out);
+  const res=await prepareDeepReview(root,out,{since,files:deep_files,maxChunks:max_chunks});
+  return structured({session:res.session,chunk_files:res.chunkFiles,summary:res.summary,instructions:res.instructions});
+});
+
+server.registerTool('d54_deep_review_submit',{
+  title:'Validate and merge agent-verified deep review findings',
+  description:'Verify line ranges, file SHA-256 hashes, unmasked quotes, and severity caps for confirmed deep review findings and merge them into a D54 report.',
+  inputSchema:{
+    path:filePath,
+    session:z.string().trim().min(1).max(64),
+    findings:z.array(z.unknown()).max(200),
+    uncertain:z.number().int().nonnegative().optional(),
+    rejected:z.number().int().nonnegative().optional(),
+  },
+  outputSchema:{
+    accepted:z.number().int().nonnegative(),
+    rejected:z.array(z.object({index:z.number().int().nonnegative(),reason:z.string()})),
+    summary:summarySchema,
+    report_paths:z.object({markdown:z.string(),json:z.string()}),
+  },
+  annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false}
+},async ({path,session,findings,uncertain,rejected})=>{
+  const root=await realpath(resolve(path)),out=join(root,'reports');
+  await regularOutput(out);
+  const res=await submitDeepReview(root,out,session,findings,{uncertain,rejected});
+  return structured({
+    accepted:res.accepted,
+    rejected:res.rejected,
+    summary:res.report.summary,
+    report_paths:{markdown:res.prefix+'.md',json:res.prefix+'.json'},
+  });
+});
 
 server.connect(new StdioServerTransport(process.stdin,wire)).catch(()=>{
   console.error('D54 Report MCP stdio bağlantısı başlatılamadı.');process.exitCode=1;
