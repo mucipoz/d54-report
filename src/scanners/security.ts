@@ -7,6 +7,7 @@ const credentialName = /(?:password|passwd|secret|token|api[_-]?key|private[_-]?
 const publicName = /^(?:NEXT_PUBLIC_|EXPO_PUBLIC_|VITE_|PUBLIC_)|public/i;
 const dotPath = /^[a-zA-Z_]+(?:\.[a-zA-Z_]+)+$/;
 const sample = /^(?:[<{$*]|\.{2}|x{3,}|example|sample|demo|dummy|test|fake|fixture|placeholder|replace|change[-_]?me|your[-_]|redacted|none$|null$)/i;
+export const knownCredentialEvidence = 'Bilinen bir anahtar biçimi bulundu (AWS/GitHub/Slack/özel anahtar). Değer gizlendi.';
 const knownCredential = /(?:\bAKIA[A-Z0-9]{16}\b|\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bxox[baprs]-[A-Za-z0-9-]{20,}\b|-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----)/;
 const settingAssignment = /(?:^|[\s{,])["']?([\w-]+)["']?\s*[:=]\s*(?:"([^"\n]+)"|'([^'\n]+)'|([^\s#,}]+))/g;
 
@@ -88,9 +89,13 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
     if (!seen.has(key)) issues.push(report(file, line, 'security', rule, severity, title, evidence, impact, advice));
     seen.add(key);
   };
-  const secret = (line: number, severity: Issue['severity'] = 'high') => add(
+  const secret = (
+    line: number,
+    severity: Issue['severity'] = 'high',
+    evidence = 'Bir kimlik bilgisi örüntüsü veya sabit hassas ayar değeri bulundu. Değer gizlendi.',
+  ) => add(
     line, 'security.literal-secret', severity, 'Kaynakta olası kimlik bilgisi',
-    'Bir kimlik bilgisi örüntüsü veya sabit hassas ayar değeri bulundu. Değer gizlendi.',
+    evidence,
     'Gerçek bir değer ise kaynak dosyaya erişen kişiler hesabı kullanabilir.',
     'Değeri doğrulayın. Gerçekse anahtarı yenileyip bir gizli değer deposuna taşıyın.',
   );
@@ -122,7 +127,7 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
       else if (servicesIndent !== undefined && indent > servicesIndent) inServices = true;
     }
     const isServiceKeyLine = serviceAccountKeyLine === number;
-    if (!isServiceKeyLine && knownCredential.test(line)) secret(number, 'high');
+    if (!isServiceKeyLine && knownCredential.test(line)) secret(number, 'high', knownCredentialEvidence);
     if (!isServiceKeyLine && settings && !/^\s*[#;]/.test(line)) {
       for (const match of line.matchAll(settingAssignment)) {
         const value = match[2] ?? match[3] ?? match[4] ?? '';

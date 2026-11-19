@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { staticAudit } from '../src/engine.js';
 import type { SourceFile } from '../src/types.js';
-import { scan as security, maskSecrets } from '../src/scanners/security.js';
+import { scan as security, maskSecrets, knownCredentialEvidence } from '../src/scanners/security.js';
 import { isTestPath } from '../src/scanners/static-utils.js';
 
 const execFileAsync = promisify(execFile);
@@ -177,6 +177,18 @@ describe('git durumu', () => {
     expect(literalIssues).toHaveLength(1);
     expect(literalIssues[0]?.severity).toBe('high');
     expect(literalIssues[0]?.line).not.toBe(keyLine);
+  });
+
+  it('distinguishes knownCredential evidence from setting assignment evidence', () => {
+    const awsKey = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+    const knownIssues = secretIssues('src/cloud.ts', `const k = "${awsKey}";`);
+    expect(knownIssues).toHaveLength(1);
+    expect(knownIssues[0]?.title).toBe('Kaynakta olası kimlik bilgisi');
+    expect(knownIssues[0]?.evidence).toBe(knownCredentialEvidence);
+
+    const settingIssues = secretIssues('config.json', '{"password": "hunter2hunter2"}');
+    expect(settingIssues).toHaveLength(1);
+    expect(settingIssues[0]?.evidence).toBe('Bir kimlik bilgisi örüntüsü veya sabit hassas ayar değeri bulundu. Değer gizlendi.');
   });
 });
 

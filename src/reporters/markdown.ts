@@ -7,10 +7,14 @@ function escape(value: unknown) {
 }
 export function markdown(report: Report): string {
   const {target,summary} = report;
+  const suppressSummary = [
+    report.suppressed ? `Bastırılan · ${report.suppressed}` : '',
+    report.suppressedKnownCredentials ? `Bastırılan gerçek biçimli anahtar · ${report.suppressedKnownCredentials}` : '',
+  ].filter(Boolean).join(' · ');
   const lines = ['# D54 Report · '+escape(target.project),'','## Yönetici özeti','',
     'Hedef · '+[target.repo ?? target.root,target.url].filter(Boolean).map(escape).join(' · '),
     '', 'Teknoloji · '+(report.stack.map(escape).join(', ') || 'Belirlenemedi'),
-    '', `Taranan dosya · ${report.filesScanned} · Toplam bulgu · ${summary.total} · Sağlık puanı · **${summary.health}/100**`,
+    '', `Taranan dosya · ${report.filesScanned} · Toplam bulgu · ${summary.total} · Sağlık puanı · **${summary.health}/100**${suppressSummary ? ' · ' + suppressSummary : ''}`,
     '', '| Kritik | Yüksek | Orta | Düşük |','| ---: | ---: | ---: | ---: |',
     '| '+Object.keys(labels).map(s=>summary.counts[s as keyof typeof labels]).join(' | ')+' |',
     '', '## Tarama kapsamı','',...report.coverage.map(n=>'- '+escape(n))];

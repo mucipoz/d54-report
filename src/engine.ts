@@ -20,6 +20,7 @@ import { review } from './llm/review.js';
 import type { LLMProvider } from './llm/provider.js';
 import { json, makeReport } from './reporters/json.js';
 import { markdown } from './reporters/markdown.js';
+import { applySuppressions, loadSuppressions } from './suppress.js';
 
 const sourceScanners = { errors, security, performance, bugs, specialized };
 function selectedModules(input: readonly Category[] = categories): Category[] {
@@ -174,7 +175,25 @@ export async function runScan(o:ScanOptions) {
       try {const ai=await review(o.provider,files); issues.push(...ai.issues);notes.push(...ai.notes);}
       catch { notes.push('AI incelemesi tamamlanamadı. Sağlayıcı bağlantısını, modeli ve JSON yanıtını kontrol edin.'); }
     } else if (modules.includes('security')) notes.push('AI incelemesi çalışmadı.');
-    const report: Report = { ...makeReport(target,stack,files.length,issues,notes), modules };
+    let keptIssues = issues;
+    let suppressedCount = 0;
+    let suppressedKnownCredentials = 0;
+    if (root) {
+      const { rules, notes: suppressNotes } = await loadSuppressions(root);
+      notes.push(...suppressNotes);
+      if (rules.length) {
+        const applied = applySuppressions(issues, rules);
+        keptIssues = applied.kept;
+        suppressedCount = applied.suppressed;
+        suppressedKnownCredentials = applied.suppressedKnownCredentials;
+      }
+    }
+    const report: Report = {
+      ...makeReport(target, stack, files.length, keptIssues, notes),
+      modules,
+      ...(suppressedCount > 0 ? { suppressed: suppressedCount } : {}),
+      ...(suppressedKnownCredentials > 0 ? { suppressedKnownCredentials } : {}),
+    };
     const slug=(target.project.replace(/[^a-z0-9_-]+/gi,'-') || 'project').slice(0,64);
     const prefix=resolve(out,`d54-report-${slug}-${report.createdAt.replace(/[:.]/g,'-')}-${randomUUID().slice(0,8)}`);
     await ensureOutputDirectory(out);

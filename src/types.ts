@@ -31,4 +31,6 @@ export interface Report {
   summary: { total: number; counts: Record<Severity, number>; health: number };
   findings: Finding[];
   priority: string[];
+  suppressed?: number;
+  suppressedKnownCredentials?: number;
 }
