@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { repositoryEnv, safeGitArgs } from '../git-state.js';
+import { gitFilterDisableArgs, repositoryEnv, safeGitArgs } from '../git-state.js';
 import { isTestPath } from '../scanners/static-utils.js';
 import type { SourceFile } from '../types.js';
 
@@ -47,13 +47,14 @@ function countLines(text: string): number {
   return text.endsWith('\n') ? count - 1 : count;
 }
 
-async function recentGitChanges(root: string): Promise<Map<string, number>> {
+async function recentGitChanges(root: string, filterArgs: readonly string[]): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   try {
     const { stdout } = await execFileAsync(
       'git',
       [
         ...safeGitArgs,
+        ...filterArgs,
         '-c', 'core.quotepath=false',
         'log',
         '--no-ext-diff', '--no-textconv', '--no-color', '--relative',
@@ -82,7 +83,11 @@ function parseDiffPlusPath(line: string): string | undefined {
   return cleaned.replace(/\\/g, '/');
 }
 
-async function diffRangesSince(root: string, ref: string): Promise<Map<string, Array<[number, number]>>> {
+async function diffRangesSince(
+  root: string,
+  ref: string,
+  filterArgs: readonly string[],
+): Promise<Map<string, Array<[number, number]>>> {
   if (!validRef(ref)) throw Error('Geçersiz --since git referansı.');
   let stdout: string;
   try {
@@ -90,6 +95,7 @@ async function diffRangesSince(root: string, ref: string): Promise<Map<string, A
       'git',
       [
         ...safeGitArgs,
+        ...filterArgs,
         '-c', 'core.quotepath=false',
         'diff',
         '--no-ext-diff', '--no-textconv', '--no-color', '--relative',
@@ -127,10 +133,16 @@ export async function selectFiles(
   root: string,
   o: { limit: number; since?: string },
 ): Promise<{ selected: SourceFile[]; changed?: Map<string, Array<[number, number]>>; notes: string[] }> {
-  const changed = o.since !== undefined ? await diffRangesSince(root, o.since) : undefined;
-  const recent = await recentGitChanges(root);
-  const limit = Math.max(0, Math.min(20, o.limit));
+  const filterGuard = await gitFilterDisableArgs(root);
   const notes: string[] = [];
+  if (filterGuard.unsafe && filterGuard.note) {
+    notes.push(filterGuard.note);
+  }
+  const changed = o.since !== undefined
+    ? (filterGuard.unsafe ? new Map<string, Array<[number, number]>>() : await diffRangesSince(root, o.since, filterGuard.args))
+    : undefined;
+  const recent = filterGuard.unsafe ? new Map<string, number>() : await recentGitChanges(root, filterGuard.args);
+  const limit = Math.max(0, Math.min(20, o.limit));
 
   const candidates = files
     .map(file => ({ file, normPath: file.path.replace(/\\/g, '/') }))

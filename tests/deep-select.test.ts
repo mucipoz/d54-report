@@ -143,6 +143,25 @@ describe('deep/select', () => {
     expect(existsSync(pwned)).toBe(false);
   });
 
+  it('does not execute repo git filter clean driver during prepareDeepReview --since', async () => {
+    const repo = join(temp, 'filter-repo');
+    const out = join(temp, 'filter-out');
+    const pwned = join(temp, 'PWN');
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await execFileAsync('git', ['init', repo]);
+    await execFileAsync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+    await execFileAsync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+    await writeFile(join(repo, '.gitattributes'), '* filter=x\n');
+    await writeFile(join(repo, 'src/auth.ts'), 'export const a = 1;\n');
+    await execFileAsync('git', ['add', '.gitattributes', 'src/auth.ts'], { cwd: repo });
+    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: repo });
+    await execFileAsync('git', ['config', 'filter.x.clean', `touch ${pwned}; cat`], { cwd: repo });
+    await writeFile(join(repo, 'src/auth.ts'), 'export const a = 2;\n');
+
+    await prepareDeepReview(repo, out, { since: 'HEAD' });
+    expect(existsSync(pwned)).toBe(false);
+  });
+
   it('matches changed files under a subdirectory root and non-ASCII paths with --since HEAD~1', async () => {
     const repo = join(temp, 'subroot-repo');
     const appRoot = join(repo, 'app');
