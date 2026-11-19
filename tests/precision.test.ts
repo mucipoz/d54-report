@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { staticAudit } from '../src/engine.js';
@@ -237,5 +237,94 @@ describe('sql kuralı', () => {
     const unsafeIssues = sqlIssues('query(`SELECT ${cols.map(f => `\\`${f}\\``).join(", ")} FROM t WHERE id = ?`, [id]);');
     expect(unsafeIssues).toHaveLength(1);
     expect(unsafeIssues[0]?.severity).toBe('high');
+  });
+});
+
+interface ExpectedIssue {
+  file: string;
+  rule: string;
+  severity: string;
+}
+
+function buildPrecisionFixtureFiles(): Record<string, string> {
+  const publicPk = ['pk', 'a'.repeat(20)].join('.');
+  const fakeAws = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+  return {
+    'apps/web/src/lib/pages.ts': [
+      'export const routes = { "/reset-password": "Şifre Sıfırlama", "/forgot-password": "Şifremi Unuttum" };',
+      'export const labels = { token: "users.verifyEmailToken", password: "Şifre" };',
+    ].join('\n'),
+    'apps/web/.env.production': [
+      'NEXT_PUBLIC_API_URL=https://api.example.invalid',
+      `NEXT_PUBLIC_MAP_KEY=${publicPk}`,
+    ].join('\n'),
+    'apps/mobile/app.json': JSON.stringify({
+      expo: {
+        name: 'OrnekUygulama',
+        extra: { mapboxPublicToken: publicPk },
+      },
+    }, null, 2),
+    'scripts/odeme-test.cjs': [
+      'const testPassword = "hunter2hunter2";',
+      'module.exports = { testPassword };',
+    ].join('\n'),
+    '.github/workflows/ci.yml': [
+      'jobs:',
+      '  test:',
+      '    services:',
+      '      db:',
+      '        env:',
+      '          MARIADB_ROOT_PASSWORD: integration-only',
+    ].join('\n'),
+    'src/db.ts': [
+      'declare function query(sql: string, params?: unknown[]): void;',
+      'declare const id: string;',
+      'declare const req: { query: { sort: string } };',
+      'query(`SELECT * FROM uyeler${id ? " WHERE id = ?" : ""}`, [id]);',
+      'query(`SELECT * FROM uyeler ORDER BY ${req.query.sort}`, []);',
+    ].join('\n'),
+    'src/keys.ts': `export const cloudKey = "${fakeAws}";\n`,
+  };
+}
+
+function issueKey(item: ExpectedIssue): string {
+  return `${item.file}::${item.rule}::${item.severity}`;
+}
+
+describe('ölçüm seti', () => {
+  it('fixture critical/high equals expected', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'd54-precision-fixture-'));
+    try {
+      const fixtureFiles = buildPrecisionFixtureFiles();
+      for (const [relPath, content] of Object.entries(fixtureFiles)) {
+        const fullPath = join(fixtureRoot, relPath);
+        await mkdir(dirname(fullPath), { recursive: true });
+        await writeFile(fullPath, content, 'utf8');
+      }
+
+      const { issues } = await staticAudit(fixtureRoot, undefined, false, ['security']);
+      const actual: ExpectedIssue[] = issues
+        .filter(i => i.severity === 'critical' || i.severity === 'high')
+        .map(i => ({ file: i.file, rule: i.rule, severity: i.severity }))
+        .sort((a, b) => issueKey(a).localeCompare(issueKey(b)));
+
+      const expectedRaw = await readFile(resolve('tests/precision/expected.json'), 'utf8');
+      const expected = (JSON.parse(expectedRaw) as ExpectedIssue[])
+        .slice()
+        .sort((a, b) => issueKey(a).localeCompare(issueKey(b)));
+
+      const expectedSet = new Set(expected.map(issueKey));
+      const actualSet = new Set(actual.map(issueKey));
+      const falsePositives = actual.filter(item => !expectedSet.has(issueKey(item))).length;
+      const falseNegatives = expected.filter(item => !actualSet.has(issueKey(item))).length;
+
+      console.info(`yanlış alarm: ${falsePositives}, kaçırma: ${falseNegatives}`);
+
+      expect(falsePositives).toBe(0);
+      expect(falseNegatives).toBe(0);
+      expect(actual).toEqual(expected);
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
