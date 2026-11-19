@@ -220,9 +220,6 @@ export async function prepareDeepReview(
         truncatedByBudget = true;
         break;
       }
-      const maskedForChunk = block.masked.filter(
-        ln => u.file === block.used[0]?.file || true ? ln >= u.start && ln <= u.end : false,
-      );
       // Match masked lines strictly by file via plan lookup for multi-file packed blocks
       const plan = plans.find(p => p.file.path === u.file);
       const exactMasked: number[] = [];
@@ -231,7 +228,7 @@ export async function prepareDeepReview(
           if (plan.pem.has(ln) || deepSensitive(plan.lines[ln - 1] ?? '')) exactMasked.push(ln);
         }
       } else {
-        exactMasked.push(...maskedForChunk);
+        exactMasked.push(...block.masked.filter(ln => ln >= u.start && ln <= u.end));
       }
       sessionChunks.push({ ...u, masked: exactMasked });
       blockUsed.push(u);
