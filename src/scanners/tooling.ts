@@ -23,6 +23,7 @@ interface Run {
   stdout: string;
   stderr: string;
   problem?: string;
+  skipped?: number;
 }
 
 function run(task: Task, timeout: number, isolated?: NodeJS.ProcessEnv): Promise<Run> {
@@ -71,7 +72,8 @@ async function auditRun(root: string, task: Task, files: readonly SourceFile[], 
     const cwd = join(temp, 'input'), home = join(temp, 'home');
     await mkdir(cwd);
     await mkdir(home);
-    try { await prepareAudit(root, task.file, task.audit!, cwd, pathsOf(files)); }
+    let skipped = 0;
+    try { ({ skipped } = await prepareAudit(root, task.file, task.audit!, cwd, pathsOf(files))); }
     catch { return { code: null, stdout: '', stderr: '', problem: 'güvenli denetim girdisi üretilemedi. Özel kaynak, desteklenmeyen sürüm, büyük veya eksik kilit dosyası olabilir' }; }
     const env: NodeJS.ProcessEnv = { PATH: hostToolPath(root,task.command), HOME: home, USERPROFILE: home, TMPDIR: temp, TEMP: temp,
       CI: 'true', NO_COLOR: '1', GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
@@ -80,7 +82,8 @@ async function auditRun(root: string, task: Task, files: readonly SourceFile[], 
       npm_config_userconfig: join(home, 'user.npmrc'), npm_config_globalconfig: join(home, 'global.npmrc'),
       PYTHONNOUSERSITE: '1', PIP_NO_INPUT: '1', PIP_CONFIG_FILE: process.platform === 'win32' ? 'NUL' : '/dev/null' };
     if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
-    return await run({ ...task, cwd }, timeout, env);
+    const result = await run({ ...task, cwd }, timeout, env);
+    return skipped ? { ...result, skipped } : result;
   } finally { await rm(temp, { recursive: true, force: true }); }
 }
 
@@ -267,6 +270,7 @@ export async function scanTools(root: string, files: readonly SourceFile[], trus
     try { result = task.audit ? await auditRun(root, task, files, timeout) : await run(task, timeout); }
     catch { notes.push(task.file + ' — ' + task.label + ' çalışma ortamı hazırlanamadı veya temizlenemedi.'); continue; }
     const label = task.file + ' — ' + task.label;
+    if (result.skipped) notes.push(task.file + ' — ' + result.skipped + ' özel/yerel paket denetim dışı kaldı.');
     if (result.problem) { notes.push(label + ' tamamlanamadı (' + result.problem + ').'); continue; }
     if (task.audit) {
       let rows: Advisory[] | undefined;

@@ -16,32 +16,106 @@ async function input(root: string, file: string, name: string): Promise<string> 
 
 type Entry = { version: string; name?: string; dependencies?: Record<string, string> };
 
-function npmInput(source: string): Record<string, string> {
+function npmInput(source: string): { files: Record<string, string>; skipped: number } {
   const original = JSON.parse(source);
-  if (![2, 3].includes(original.lockfileVersion) || !original.packages || !Object.hasOwn(original.packages, '')) throw Error();
+  if (![2, 3].includes(original.lockfileVersion) || !original.packages || typeof original.packages !== 'object'
+      || Array.isArray(original.packages) || !Object.hasOwn(original.packages, '')) throw Error();
   const manifest: Entry = { name: 'd54-audit-input', version: '1.0.0' };
   const packages: Record<string, Entry> = Object.create(null);
   packages[''] = manifest;
   const edges: [string, string, string][] = [];
-  for (const [path, item] of Object.entries(original.packages)) {
-    if (!path) continue;
+  const remap = new Map<string, string>();
+  const wsParents = new Map<string, string>();
+  let wsCounter = 0;
+  let skipped = 0;
+
+  const entries = Object.entries(original.packages)
+    .filter(([path]) => Boolean(path))
+    .map(([path, item]) => {
+      const nmIdx = path.startsWith('node_modules/') ? 0 : path.indexOf('/node_modules/');
+      return { path, item, nmIdx, depth: nmIdx < 0 ? -1 : path.slice(nmIdx).split(/(?:^|\/)node_modules\//).length };
+    })
+    .sort((a, b) => a.depth - b.depth);
+
+  for (const { path, item, nmIdx } of entries) {
+    if (nmIdx < 0) continue;
     const entry = item as { version?: string; resolved?: string; link?: boolean; name?: string };
-    const segments = path.split(/(?:^|\/)node_modules\//);
+    if (!entry || typeof entry !== 'object') { skipped++; continue; }
+    if (entry.link) continue;
+
+    const ws = nmIdx === 0 ? '' : path.slice(0, nmIdx);
+    const rest = nmIdx === 0 ? path : path.slice(nmIdx + 1);
+    const segments = rest.split(/(?:^|\/)node_modules\//);
     const name = segments.pop()!;
-    if (!path.startsWith('node_modules/') || !safeName(name) || segments.slice(1).some(s => !safeName(s))
-        || !entry || entry.link || typeof entry.version !== 'string' || !semver.test(entry.version)
-        || (entry.resolved !== undefined && (typeof entry.resolved !== 'string' || !entry.resolved.startsWith('https://registry.npmjs.org/')))
-        || (entry.name !== undefined && entry.name !== name)) throw Error();
-    const parent = segments.join('/node_modules/').replace(/^\//, '');
-    packages[path] = { version: entry.version };
-    edges.push([parent, name, entry.version]);
+
+    if (!safeName(name) || segments.slice(1).some(s => !safeName(s))
+        || typeof entry.version !== 'string' || !semver.test(entry.version)) {
+      skipped++;
+      continue;
+    }
+    if (entry.resolved !== undefined && (typeof entry.resolved !== 'string' || !entry.resolved.startsWith('https://registry.npmjs.org/'))) {
+      skipped++;
+      continue;
+    }
+    if (entry.name !== undefined && (typeof entry.name !== 'string' || !safeName(entry.name))) {
+      skipped++;
+      continue;
+    }
+
+    const origParentRest = segments.join('/node_modules/').replace(/^\//, '');
+    const origParent = ws ? (origParentRest ? `${ws}/${origParentRest}` : ws) : origParentRest;
+
+    let targetParent = '';
+    let targetPath = '';
+    if (!origParent || origParent === ws) {
+      if (!packages[rest]) {
+        targetParent = '';
+        targetPath = rest;
+      } else {
+        let wsParent = wsParents.get(ws);
+        if (!wsParent) {
+          const wsKey = 'd54-ws-' + (++wsCounter);
+          wsParent = 'node_modules/' + wsKey;
+          packages[wsParent] = { version: '0.0.0' };
+          edges.push(['', wsKey, '0.0.0']);
+          wsParents.set(ws, wsParent);
+        }
+        targetParent = wsParent;
+        targetPath = wsParent + '/' + rest;
+      }
+    } else {
+      const mappedParent = remap.get(origParent);
+      if (!mappedParent || !packages[mappedParent]) {
+        skipped++;
+        continue;
+      }
+      targetParent = mappedParent;
+      targetPath = mappedParent + '/node_modules/' + name;
+    }
+
+    if (packages[targetPath]) {
+      skipped++;
+      continue;
+    }
+
+    const outEntry: Entry = { version: entry.version };
+    if (entry.name !== undefined && entry.name !== name) outEntry.name = entry.name;
+    packages[targetPath] = outEntry;
+    remap.set(path, targetPath);
+    edges.push([targetParent, name, entry.version]);
   }
+
   for (const [parent, name, version] of edges) {
-    if (!packages[parent]) throw Error();
+    if (!packages[parent]) continue;
     (packages[parent]!.dependencies ??= Object.create(null))[name] = version;
   }
-  return { 'package.json': JSON.stringify(manifest),
-    'package-lock.json': JSON.stringify({ name: manifest.name, version: manifest.version, lockfileVersion: 3, requires: true, packages }) };
+  return {
+    skipped,
+    files: {
+      'package.json': JSON.stringify(manifest),
+      'package-lock.json': JSON.stringify({ name: manifest.name, version: manifest.version, lockfileVersion: 3, requires: true, packages }),
+    },
+  };
 }
 
 function cargoInput(source: string): Record<string, string> {
@@ -87,10 +161,12 @@ function pipInput(source: string): Record<string, string> {
 }
 
 export async function prepareAudit(root: string, file: string, kind: 'npm' | 'cargo' | 'pip' | 'composer',
-  cwd: string, snapshot: ReadonlySet<string>): Promise<void> {
+  cwd: string, snapshot: ReadonlySet<string>): Promise<{ skipped: number }> {
   const name = kind === 'cargo' ? 'Cargo.lock' : kind === 'pip' ? 'requirements.txt' : kind === 'composer' ? 'composer.lock'
     : snapshot.has(join(dirname(file), 'npm-shrinkwrap.json').split(sep).join('/')) ? 'npm-shrinkwrap.json' : 'package-lock.json';
   const source = await input(root, file, name);
-  const clean = { npm: npmInput, cargo: cargoInput, pip: pipInput, composer: composerInput }[kind](source);
-  for (const [filename, content] of Object.entries(clean)) await writeFile(join(cwd, filename), content, { flag: 'wx', mode: 0o600 });
+  const result = kind === 'npm' ? npmInput(source)
+    : { files: { cargo: cargoInput, pip: pipInput, composer: composerInput }[kind](source), skipped: 0 };
+  for (const [filename, content] of Object.entries(result.files)) await writeFile(join(cwd, filename), content, { flag: 'wx', mode: 0o600 });
+  return { skipped: result.skipped };
 }

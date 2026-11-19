@@ -119,4 +119,73 @@ describe('araç girdileri', () => {
       expect(JSON.parse(sanitized).packages['node_modules/a'].dependencies.b).toBe('2.0.1');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it('workspace lock produces audit input', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-ws-'));
+    const out = join(root, 'out');
+    try {
+      await mkdir(out);
+      await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+        '': { name: 'mono', version: '1.0.0' },
+        'apps/web': { name: '@mono/web', version: '1.0.0' },
+        'node_modules/@mono/web': { resolved: 'apps/web', link: true },
+        'apps/web/node_modules/zod': { version: '3.22.4', resolved: 'https://registry.npmjs.org/zod/-/zod-3.22.4.tgz' },
+        'packages/ui': { name: '@mono/ui', version: '1.0.0' },
+        'packages/ui/node_modules/zod': { version: '3.21.4', resolved: 'https://registry.npmjs.org/zod/-/zod-3.21.4.tgz' },
+      } }));
+      const result = await prepareAudit(root, 'package.json', 'npm', out, new Set(['package-lock.json']));
+      expect(result.skipped).toBe(0);
+      const lock = JSON.parse(await readFile(join(out, 'package-lock.json'), 'utf8'));
+      expect(lock.packages['node_modules/zod']?.version).toBe('3.22.4');
+      expect(lock.packages['node_modules/d54-ws-1']?.version).toBe('0.0.0');
+      expect(lock.packages['node_modules/d54-ws-1/node_modules/zod']?.version).toBe('3.21.4');
+      expect(lock.packages['apps/web']).toBeUndefined();
+      expect(lock.packages['node_modules/@mono/web']).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('private resolved skipped not fatal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-priv-'));
+    const out = join(root, 'out');
+    try {
+      await mkdir(out);
+      await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+        '': { name: 'app', version: '1.0.0' },
+        'node_modules/internal-pkg': { version: '1.0.0', resolved: 'https://npm.internal.example/internal-pkg.tgz' },
+        'node_modules/zod': { version: '3.22.4', resolved: 'https://registry.npmjs.org/zod/-/zod-3.22.4.tgz' },
+      } }));
+      const result = await prepareAudit(root, 'package.json', 'npm', out, new Set(['package-lock.json']));
+      expect(result.skipped).toBe(1);
+      const lock = JSON.parse(await readFile(join(out, 'package-lock.json'), 'utf8'));
+      expect(lock.packages['node_modules/internal-pkg']).toBeUndefined();
+      expect(lock.packages['node_modules/zod']?.version).toBe('3.22.4');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('npm takma ad girdisinde yolu koruyup gerçek paket adını yazar, güvensiz takma adı atlar', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-alias-'));
+    const out = join(root, 'out');
+    try {
+      await mkdir(out);
+      await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+        '': { name: 'mobile', version: '1.0.0' },
+        'node_modules/@babel/traverse--for-generate-function-map': {
+          version: '7.24.0',
+          name: '@babel/traverse',
+          resolved: 'https://registry.npmjs.org/@babel/traverse/-/traverse-7.24.0.tgz',
+        },
+        'node_modules/bad-alias': {
+          version: '1.0.0',
+          name: '../evil',
+        },
+      } }));
+      const result = await prepareAudit(root, 'package.json', 'npm', out, new Set(['package-lock.json']));
+      expect(result.skipped).toBe(1);
+      const lock = JSON.parse(await readFile(join(out, 'package-lock.json'), 'utf8'));
+      const aliasEntry = lock.packages['node_modules/@babel/traverse--for-generate-function-map'];
+      expect(aliasEntry?.version).toBe('7.24.0');
+      expect(aliasEntry?.name).toBe('@babel/traverse');
+      expect(lock.packages['node_modules/bad-alias']).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 });
