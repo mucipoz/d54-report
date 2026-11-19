@@ -7,6 +7,18 @@ Mucip D54 Report'un "kodlama, tasarım, işleyiş, mantık ve işlevsellik hatal
 
 **Başarı:** Doğadayız 54'te (`apps/web/src/lib/mysql/rpc-handlers.ts`, kayıt/ödeme dosyaları) çalıştırıldığında insanın doğruladığı gerçek mantık hataları bulmak; raporda doğrulanmamış tahmin olmaması.
 
+## Çalışma modları (Mucip kararı, 19 Kas: "ücretsiz yolu önce kuralım")
+- **Ajan modu — ÖNCE YAPILIR, ücretsiz:** İncelemeyi D54 Report'u çalıştıran ajan (Claude Code, Codex) kendi aboneliğiyle yapar. D54 Report hazırlar (seçim, parçalama, gizleme), ajan inceler ve doğrular, D54 Report sonucu denetleyip rapora yazar. Kim kullanırsa kendi aboneliği kullanılır; depoda anahtar/hesap yoktur.
+- **API modu — İKİNCİ PR:** D54 Report modeli kendisi çağırır (aşağıdaki §3-§4 akışı); kullanıcının kendi `D54_API_KEY`'i gerekir. Ajan modunun doğrulama kodunu paylaşır. Mucip API kullanımına da açık ("apide bayağı paramız var", bakiyeyi kontrol ediyor); Doğadayız 54 saha denemesinde onun anahtarı onayıyla kullanılır.
+
+### Ajan modu akışı
+1. MCP `d54_deep_review_prepare({ path, since?, deep_files?, max_chunks? })` → seçim (§1) + parçalama (§2) + gizleme; parçaları `<rapor dizini>/deep/<oturum>/chunk-NN.txt` dosyalarına satır numaralı yazar (her dosya ≤ 12.000 karakter, birden çok küçük parça birleşebilir). Oturum durumu `<rapor dizini>/deep/<oturum>/session.json`: parça kimlikleri, dosya yolu, satır aralığı, gizli satır numaraları, kaynak içerik özeti (sha256). Yanıt: oturum kimliği, parça dosya yolları, kapsam özeti, ajan talimatı (kategoriler, kanıt kuralları, şüpheci doğrulama zorunluluğu, sonuç şeması). Yanıt boyutu küçük tutulur (parçalar yanıtta değil, dosyada).
+2. Ajan parça dosyalarını okur, adayları çıkarır, her adayı ayrı bir doğrulamadan geçirir (talimat: ikinci bir yardımcı/model ile, iddiayı çürütmeye çalışarak).
+3. MCP `d54_deep_review_submit({ path, session, findings[] })`; her öğe `{category, file, line, quote, title, impact, advice, severity, verdict, reason}`. D54 Report denetler: oturum var ve kaynak özeti hâlâ aynı (dosya değiştiyse o dosyanın öğeleri reddedilir); dosya oturumda; satır parçanın aralığında; satır gizli değil; `quote` (boşluk normalleştirilmiş) o satırda geçiyor; `verdict === 'confirmed'`; kategori listede; metinler ≤ 800 karakter ve sır deseni içermiyor; önem tavanı (§4). Geçenler bulgu olur (§5), en son tarama raporuyla birleştirilip yeni rapor (JSON + Markdown) yazılır; rapor yoksa yalnız derin bulgularla rapor. Yanıt: kabul/ret sayıları ve ret nedenleri, yeni rapor yolları, güncel özet.
+4. Ajanın ürettiği `uncertain`/`rejected` sayıları da gönderilebilir; kapsam notuna yazılır.
+- Ajan doğrulamasını D54 Report kanıtlayamaz; bulgular "Derin inceleme (ajan)" etiketi taşır ve bulgu kanıtı ile satır denetimi zorunludur.
+- CLI karşılığı (MCP'siz ajanlar için): `d54-report deep prepare --path <dir> [--since <ref>]` ve `d54-report deep submit --path <dir> --session <id> --findings <json-dosyası>`; çıktı JSON.
+
 ## Hedefler
 - **A — tam mod (`--deep-review`):** riskli dosyaları seç, fonksiyon gövdelerini parça parça incelet, adayları doğrulat, yalnız doğrulananları bulgu yap.
 - **B — fark modu (`--deep-review --since <git-ref>`):** yalnız `<ref>`'ten bu yana değişen satırlara değen fonksiyonlar.
@@ -42,6 +54,8 @@ Mucip D54 Report'un "kodlama, tasarım, işleyiş, mantık ve işlevsellik hatal
 - Diğer diller: 200 satırlık pencere.
 - Büyük dosyada (ör. `rpc-handlers.ts`) parçalar risk kelimesi geçen ve uzun olanlar önce olacak şekilde sıralanır.
 - Gizleme: triyajdaki `isSensitiveForTriage` desenleriyle eşleşen satırlar `<gizli satır>`; satır numaraları korunur.
+
+> §3, §4 ve §6 API modu içindir (sonraki PR). Ajan modunda aynı kategori, kanıt, önem tavanı ve bulgu biçimi (§5) geçerlidir; bütçe ajanın kendi işidir, `max_chunks` (varsayılan 40) parça sayısını sınırlar.
 
 ### 3. Bulma çağrısı
 - Bir çağrıda en çok ~12.000 karakter kod (birden çok küçük parça birleştirilebilir), satır numaralı.
@@ -79,8 +93,10 @@ Model sahte sağlayıcı ile (mevcut `provider.test.ts`/triyaj testi düzeni):
 - bütçe dolunca durur ve not yazar;
 - `--since` geçersiz ref ve `--no-llm` birlikteliği hata verir.
 
+Ajan modu testleri: prepare parça dosyaları + session.json üretir, sır satırı dosyaya yazılmaz; submit denetimleri (oturum yok, kaynak değişti, aralık dışı satır, gizli satır, eşleşmeyen alıntı, `confirmed` olmayan, bilinmeyen kategori, önem tavanı) tek tek reddeder; geçerli öğe rapora birleşir ve puan yeniden hesaplanır; oturum dizini rapor dizininin dışına çıkamaz (yol geçişi), oturum kimliği biçimi doğrulanır.
+
 ### 9. Saha denemesi
-Birleşmeden önce Doğadayız 54'te gerçek modelle A modu (8 dosya, 40 çağrı). Her doğrulanan bulgu elle kontrol edilir; doğru/yanlış oranı PR'a yazılır. Yanlış oranı yüksekse istemler ayarlanır.
+Birleşmeden önce Doğadayız 54'te ajan modu (Claude Code bu oturumda; 8 dosya, en çok 40 parça). Her doğrulanan bulgu elle kontrol edilir; doğru/yanlış oranı PR'a yazılır. Yanlış oranı yüksekse istemler ayarlanır.
 
 ## Kurucu kontrolü sonrası kararlar (Claude'un kararları, Mucip düzeltebilir)
 1. **Onarım:** derin bulgular bu alt projede "yalnız rapor"dur; `verifyCoverage`'ın `review.*` engeli değişmez. Onarım alt projesi 3'te ele alınır. (Aynı yere not: paket başına gruplama sonrası kısmi npm onarımı `verifyScan` imzası yüzünden reddediliyor — PR #5 yan etkisi.)
