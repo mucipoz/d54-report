@@ -23,8 +23,10 @@ common(app.command('scan').description('Statik analiz ve tarayıcı denetimi'))
   .option('--triage','kritik ve yüksek bulguları model ile triyaj et')
   .action(async o => {
     if (o.url && o.browser === false) throw Error('--url ve --no-browser birlikte kullanılamaz.');
-    if (o.triage && !o.llm) throw Error('--triage için --llm gerekir.');
-    const {report,prefix,unavailable} = await runScan({...o,provider:o.llm ? await loadProvider(o.config) : undefined});
+    if (o.triage && !o.llm) throw Error('--triage, --no-llm ile birlikte kullanılamaz.');
+    const provider = o.llm ? await loadProvider(o.config) : undefined;
+    if (o.triage && !provider) throw Error('--triage için model yapılandırması gerekir (d54-report.config.json veya D54_PROVIDER/D54_MODEL)');
+    const {report,prefix,unavailable} = await runScan({...o,provider});
     console.log(o.json ? JSON.stringify(report) : `${report.summary.total} bulgu · ${report.summary.health}/100\n${prefix}.md\n${prefix}.json`);
     if (o.failOnCritical && report.summary.counts.critical) process.exitCode=2;
     else if (unavailable) process.exitCode=1;

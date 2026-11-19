@@ -111,6 +111,7 @@ export async function runScan(o:ScanOptions) {
   if (!inspectSources && !browser) throw Error('Yalnız ui modülü seçildi. Tarayıcıyı etkinleştirin.');
   if (o.path && o.repo) throw Error('Kaynak için --path veya --repo seçin. --url her ikisiyle de kullanılabilir.');
   if (o.repo && o.trusted) throw Error('Proje komutları için depoyu inceleyip yerel --path ile çalıştırın.');
+  if (o.triage && !o.provider) throw Error('--triage için model yapılandırması gerekir (d54-report.config.json veya D54_PROVIDER/D54_MODEL)');
   const repoUrl = o.repo ? githubRepoUrl(o.repo) : undefined;
   let address: string | undefined;
   if (o.url) {
@@ -201,8 +202,7 @@ export async function runScan(o:ScanOptions) {
     const baseReport = makeReport(target, stack, files.length, keptIssues, notes);
     let finalFindings = baseReport.findings;
     let finalCoverage = baseReport.coverage;
-    if (o.triage) {
-      if (!o.provider) throw Error('--triage için --llm gerekir.');
+    if (o.triage && o.provider) {
       try {
         const triaged = await triage(o.provider, baseReport.findings, files);
         finalFindings = triaged.findings;
