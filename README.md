@@ -562,6 +562,18 @@ use the returned `report_paths.json` for `d54_fix_findings` or
 `dry_run: true`. Use the status of each result to distinguish saved patches
 from completed verification. [Agent contract](AGENT.md)
 
-## Lisans
+## Lisans / License
 
-MIT. [Lisans metni](LICENSE)
+**PolyForm Noncommercial 1.0.0.** [Lisans metni / License text](LICENSE)
+
+- Ticari olmayan her amaçla ücretsiz kullanabilir, değiştirebilir, geliştirebilir ve paylaşabilirsiniz.
+- Dağıtırken lisans metnini ve `Required Notice:` satırını korumanız gerekir.
+- Lisans: Mucip ÖZ - elithost.com.tr (sm@elithost.com.tr)
+- Ticari kullanım ve satış izni yoktur.
+
+- Free to use, modify, improve and share for any noncommercial purpose.
+- When distributing, keep the license text and the `Required Notice:` line.
+- Licensor: Mucip ÖZ - elithost.com.tr (sm@elithost.com.tr)
+- Commercial use and selling are not permitted.
+
+Bu depo daha önce MIT lisansıyla yayımlanıyordu; yeni lisans bu değişiklikten sonraki sürümler için geçerlidir. / This repository was previously released under MIT; the new license applies to versions after this change.
