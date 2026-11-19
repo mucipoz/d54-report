@@ -55,6 +55,26 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
     'Gerçek bir değer ise kaynak dosyaya erişen kişiler hesabı kullanabilir.',
     'Değeri doğrulayın. Gerçekse anahtarı yenileyip bir gizli değer deposuna taşıyın.',
   );
+  let serviceAccount = false;
+  if (/\.json$/i.test(file.path)) {
+    try {
+      const parsed: unknown = JSON.parse(file.text);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        if (record.type === 'service_account' && typeof record.private_key === 'string' && record.private_key.trim().length > 0) {
+          serviceAccount = true;
+          const keyLine = file.text.split('\n').findIndex(l => /"private_key"\s*:/.test(l)) + 1 || 1;
+          add(
+            keyLine, 'security.service-account-key', 'high',
+            'Servis hesabı özel anahtar dosyası',
+            'JSON dosyasında service_account türü ve private_key alanı birlikte bulundu. Değer gizlendi.',
+            'Dosya sızarsa bulut servis hesabına yetkisiz erişim sağlanabilir.',
+            'Anahtarı gizli değer deposuna taşıyın, git geçmişinden kaldırın ve anahtarı yenileyin.',
+          );
+        }
+      }
+    } catch { /* geçersiz JSON; satır taramasına devam et */ }
+  }
   scanLines(file, (line, number) => {
     let inServices = false;
     if (workflowFile && line.trim() && !/^\s*#/.test(line)) {
@@ -63,8 +83,8 @@ export function scan(file: SourceFile, _files: readonly SourceFile[]): Issue[] {
       if (/^\s*services\s*:/.test(line)) servicesIndent = indent;
       else if (servicesIndent !== undefined && indent > servicesIndent) inServices = true;
     }
-    if (knownCredential.test(line)) secret(number, 'high');
-    if (settings && !/^\s*[#;]/.test(line)) {
+    if (!serviceAccount && knownCredential.test(line)) secret(number, 'high');
+    if (!serviceAccount && settings && !/^\s*[#;]/.test(line)) {
       for (const match of line.matchAll(settingAssignment)) {
         const value = match[2] ?? match[3] ?? match[4] ?? '';
         if ((match[2] !== undefined || match[3] !== undefined || env || /\.(?:ya?ml|ini|properties|conf)$/i.test(file.path))

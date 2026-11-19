@@ -1,7 +1,15 @@
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { staticAudit } from '../src/engine.js';
 import type { SourceFile } from '../src/types.js';
 import { scan as security, maskSecrets } from '../src/scanners/security.js';
 import { isTestPath } from '../src/scanners/static-utils.js';
+
+const execFileAsync = promisify(execFile);
 
 function source(path: string, text: string): SourceFile {
   return { path, text, size: Buffer.byteLength(text) };
@@ -86,5 +94,68 @@ describe('şifre kuralı', () => {
     const issues = secretIssues('src/maps.ts', `const accessToken = "${fakeSk}";`);
     expect(issues).toHaveLength(1);
     expect(issues[0]?.severity).toBe('high');
+  });
+});
+
+function fakeServiceAccountJson() {
+  const header = '-----BEGIN ' + 'PRIVATE KEY-----';
+  const footer = '-----END ' + 'PRIVATE KEY-----';
+  return JSON.stringify({
+    type: 'service_account',
+    project_id: 'demo-project',
+    private_key_id: 'key-1',
+    private_key: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC\n${footer}\n`,
+    client_email: 'demo@demo-project.iam.gserviceaccount.com',
+  }, null, 2);
+}
+
+describe('git durumu', () => {
+  it('tracked key is critical', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-git-tracked-'));
+    try {
+      await writeFile(join(root, 'sa.json'), fakeServiceAccountJson());
+      await execFileAsync('git', ['init'], { cwd: root });
+      await execFileAsync('git', ['add', 'sa.json'], { cwd: root });
+      const { issues } = await staticAudit(root, undefined, false, ['security']);
+      const fileIssues = issues.filter(i => i.file === 'sa.json');
+      expect(fileIssues).toHaveLength(1);
+      expect(fileIssues[0]?.rule).toBe('security.service-account-key');
+      expect(fileIssues[0]?.severity).toBe('critical');
+      expect(fileIssues[0]?.evidence).not.toContain('MIIEvQIBADAN');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignored key is low', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-git-ignored-'));
+    try {
+      await writeFile(join(root, '.gitignore'), 'sa.json\n');
+      await writeFile(join(root, 'sa.json'), fakeServiceAccountJson());
+      await execFileAsync('git', ['init'], { cwd: root });
+      await execFileAsync('git', ['add', '.gitignore'], { cwd: root });
+      const { issues } = await staticAudit(root, undefined, false, ['security']);
+      const fileIssues = issues.filter(i => i.file === 'sa.json');
+      expect(fileIssues).toHaveLength(1);
+      expect(fileIssues[0]?.rule).toBe('security.service-account-key');
+      expect(fileIssues[0]?.severity).toBe('low');
+      expect(fileIssues[0]?.evidence).toBe("Yerel dosya, git'e girmemiş.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('non git root degrades', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'd54-nongit-'));
+    try {
+      await writeFile(join(root, 'sa.json'), fakeServiceAccountJson());
+      const { issues } = await staticAudit(root, undefined, false, ['security']);
+      const fileIssues = issues.filter(i => i.file === 'sa.json');
+      expect(fileIssues).toHaveLength(1);
+      expect(fileIssues[0]?.rule).toBe('security.service-account-key');
+      expect(fileIssues[0]?.severity).toBe('high');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

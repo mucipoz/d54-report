@@ -2,6 +2,7 @@ import { basename, resolve } from 'node:path';
 import { lstat, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { snapshot, technology } from './source.js';
+import { gitState } from './git-state.js';
 import { checkout, githubRepoUrl, preview } from './targets.js';
 import { ensureOutputDirectory, readBoundedFile } from './fs-guards.js';
 import { startProject } from './project-preview.js';
@@ -52,6 +53,20 @@ async function collectStatic(root: string, out: string | undefined, trusted: boo
     const tools = await scanTools(root,files,trusted,selected);
     toolCompletion = tools.completion;
     issues.push(...tools.issues); notes.push(...tools.notes);
+  }
+  const serviceAccountIssues = issues.filter(i => i.rule === 'security.service-account-key' && i.file);
+  if (serviceAccountIssues.length) {
+    const git = await gitState(root);
+    if (git) {
+      for (const issue of serviceAccountIssues) {
+        const filePath = issue.file!;
+        if (git.tracked.has(filePath)) issue.severity = 'critical';
+        else if (await git.isIgnored(filePath)) {
+          issue.severity = 'low';
+          issue.evidence = "Yerel dosya, git'e girmemiş.";
+        }
+      }
+    }
   }
   return {files,issues,notes,pythonCompleted,toolCompletion};
 }
