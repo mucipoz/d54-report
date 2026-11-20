@@ -272,6 +272,10 @@ export async function prepareDeepReview(
     notes.push(`Parça sınırı (${maxChunks}) nedeniyle inceleme kapsamı sınırlandı.`);
   }
 
+  // Son kesimde parçası kalmayan dosya "incelendi" listesine girmez.
+  const reviewedFiles = new Set(sessionChunks.map(c => c.file));
+  const reviewedPlans = plans.filter(p => reviewedFiles.has(p.file.path));
+
   const id = randomBytes(8).toString('hex');
   const sessionDir = join(outReal, 'deep', id);
   await ensureOutputDirectory(sessionDir);
@@ -290,7 +294,7 @@ export async function prepareDeepReview(
     id,
     root: rootReal,
     createdAt: new Date().toISOString(),
-    files: plans.map(p => ({ path: p.file.path, sha256: sha256Text(p.file.text) })),
+    files: reviewedPlans.map(p => ({ path: p.file.path, sha256: sha256Text(p.file.text) })),
     chunks: sessionChunks,
   };
 
@@ -303,7 +307,7 @@ export async function prepareDeepReview(
     session: id,
     chunkFiles,
     summary: {
-      files: plans.map(p => p.file.path),
+      files: reviewedPlans.map(p => p.file.path),
       chunks: sessionChunks.length,
       skippedMasked,
       notes,
