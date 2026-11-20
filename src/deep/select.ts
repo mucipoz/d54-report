@@ -16,6 +16,9 @@ export const RISK_KEYWORDS = [
 
 const CANDIDATE_EXT = /\.(?:tsx?|jsx?|mjs|cjs|py|php|rs|java|kt)$/i;
 const EXCLUDED_DIR = /(?:^|\/)(?:fixtures?|examples?|dist|build)(?:\/|$)/i;
+// İstemci arayüz bileşenleri sunucu/yetki koduna göre daha düşük öncelik alır.
+const UI_COMPONENT_DIR = /(?:^|\/)(?:components?|ui|views|pages)\//;
+const UI_COMPONENT_EXT = /\.(?:tsx|jsx)$/;
 const VALID_REF_RE = /^[A-Za-z0-9._/~^-]{1,100}$/;
 
 export function validRef(ref: string): boolean {
@@ -35,6 +38,9 @@ export function riskScore(path: string, lines: number, recentChanges: number): n
   }
   score += Math.min(20, Math.max(0, recentChanges) * 2);
   score += Math.min(10, Math.floor(Math.max(0, lines) / 500));
+  if (UI_COMPONENT_DIR.test(lower) && UI_COMPONENT_EXT.test(lower)) {
+    score = Math.max(0, score - 10);
+  }
   return score;
 }
 
@@ -132,7 +138,7 @@ export async function selectFiles(
   files: readonly SourceFile[],
   root: string,
   o: { limit: number; since?: string },
-): Promise<{ selected: SourceFile[]; changed?: Map<string, Array<[number, number]>>; notes: string[] }> {
+): Promise<{ selected: SourceFile[]; reserve: SourceFile[]; changed?: Map<string, Array<[number, number]>>; notes: string[] }> {
   const filterGuard = await gitFilterDisableArgs(root);
   const notes: string[] = [];
   if (filterGuard.unsafe && filterGuard.note) {
@@ -155,14 +161,20 @@ export async function selectFiles(
     .sort((a, b) => b.score - a.score || a.normPath.localeCompare(b.normPath, 'en'));
 
   const selected: SourceFile[] = [];
+  const reserve: SourceFile[] = [];
   for (const item of candidates) {
-    if (selected.length >= limit) break;
-    if (!item.file.text) {
-      notes.push(`${item.file.path} içeriği okunamadı (boyut sınırı)`);
+    if (selected.length < limit) {
+      if (!item.file.text) {
+        notes.push(`${item.file.path} içeriği okunamadı (boyut sınırı)`);
+        continue;
+      }
+      selected.push(item.file);
       continue;
     }
-    selected.push(item.file);
+    if (selected.length + reserve.length >= 20) break;
+    if (!item.file.text) continue;
+    reserve.push(item.file);
   }
 
-  return { selected, ...(changed ? { changed } : {}), notes };
+  return { selected, reserve, ...(changed ? { changed } : {}), notes };
 }
