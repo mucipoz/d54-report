@@ -155,7 +155,7 @@ export async function prepareDeepReview(
     accepted: Chunk[];
   }
 
-  const plans: FilePlan[] = sel.selected.map(file => {
+  const makePlan = (file: SourceFile): FilePlan => {
     const lines = file.text.split(/\r?\n/);
     if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
     const ranges = sel.changed?.get(file.path.replace(/\\/g, '/'));
@@ -166,17 +166,28 @@ export async function prepareDeepReview(
       candidates: chunkFile(file, ranges),
       accepted: [],
     };
-  });
+  };
+
+  const plans: FilePlan[] = sel.selected.map(makePlan);
 
   let skippedMasked = 0;
   let pickedCount = 0;
   let truncatedByBudget = false;
   const cursors = plans.map(() => 0);
+  let reserveIdx = 0;
+  let reserveAdded = 0;
+  // Yedek dosyalar da tükenince sınır kalkar: bütçe boşa gitmez, kalan parçalar kapsam notuna yansır.
+  let capLifted = false;
 
   while (pickedCount < maxChunks) {
+    const perFileCap = capLifted ? Infinity : Math.max(
+      Math.ceil(maxChunks / 4),
+      Math.ceil(maxChunks / Math.max(1, plans.length)),
+    );
     let progressed = false;
     for (let i = 0; i < plans.length && pickedCount < maxChunks; i++) {
       const plan = plans[i]!;
+      if (plan.accepted.length >= perFileCap) continue;
       while (cursors[i]! < plan.candidates.length) {
         const candidate = plan.candidates[cursors[i]!]!;
         cursors[i]!++;
@@ -190,10 +201,22 @@ export async function prepareDeepReview(
         break;
       }
     }
-    if (!progressed) break;
+    if (!progressed) {
+      if (pickedCount < maxChunks && reserveIdx < sel.reserve.length && plans.length < 20) {
+        plans.push(makePlan(sel.reserve[reserveIdx++]!));
+        cursors.push(0);
+        reserveAdded++;
+        continue;
+      }
+      if (!capLifted && plans.some((p, i) => cursors[i]! < p.candidates.length)) {
+        capLifted = true;
+        continue;
+      }
+      break;
+    }
   }
 
-  if (plans.some((p, i) => cursors[i]! < p.candidates.length)) {
+  if (pickedCount >= maxChunks && plans.some((p, i) => cursors[i]! < p.candidates.length)) {
     truncatedByBudget = true;
   }
 
@@ -239,12 +262,19 @@ export async function prepareDeepReview(
     if (sessionChunks.length >= maxChunks) break;
   }
 
+  if (reserveAdded > 0) {
+    notes.push(`${reserveAdded} dosya yedek listeden eklendi (parça bütçesi dengelendi).`);
+  }
   if (skippedMasked > 0) {
     notes.push(`${skippedMasked} parça gizli satır oranı (>%30) nedeniyle atlandı.`);
   }
   if (truncatedByBudget) {
     notes.push(`Parça sınırı (${maxChunks}) nedeniyle inceleme kapsamı sınırlandı.`);
   }
+
+  // Son kesimde parçası kalmayan dosya "incelendi" listesine girmez.
+  const reviewedFiles = new Set(sessionChunks.map(c => c.file));
+  const reviewedPlans = plans.filter(p => reviewedFiles.has(p.file.path));
 
   const id = randomBytes(8).toString('hex');
   const sessionDir = join(outReal, 'deep', id);
@@ -264,7 +294,7 @@ export async function prepareDeepReview(
     id,
     root: rootReal,
     createdAt: new Date().toISOString(),
-    files: sel.selected.map(f => ({ path: f.path, sha256: sha256Text(f.text) })),
+    files: reviewedPlans.map(p => ({ path: p.file.path, sha256: sha256Text(p.file.text) })),
     chunks: sessionChunks,
   };
 
@@ -277,7 +307,7 @@ export async function prepareDeepReview(
     session: id,
     chunkFiles,
     summary: {
-      files: sel.selected.map(f => f.path),
+      files: reviewedPlans.map(p => p.file.path),
       chunks: sessionChunks.length,
       skippedMasked,
       notes,

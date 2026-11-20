@@ -136,4 +136,59 @@ describe('deep/session', () => {
     const fullRes = await prepareDeepReview(project, out, {});
     expect(fullRes.summary.notes).not.toContain(note);
   });
+
+  it('caps chunks per file at perFileCap so one large file cannot monopolize maxChunks', async () => {
+    const bigFns: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      bigFns.push(
+        `export function bigHandler_${i}(x: number) {`,
+        `  const a = x + ${i};`,
+        `  const b = a * 2;`,
+        `  return b + ${i};`,
+        `}`,
+      );
+    }
+    await writeFile(join(project, 'src/auth/big-admin.ts'), bigFns.join('\n') + '\n');
+    await writeFile(join(project, 'src/auth/small-1.ts'), 'export const s1 = 1;\n');
+    await writeFile(join(project, 'src/auth/small-2.ts'), 'export const s2 = 2;\n');
+    await writeFile(join(project, 'src/auth/small-3.ts'), 'export const s3 = 3;\n');
+    for (let i = 0; i < 10; i++) {
+      await writeFile(join(project, `src/reserve-${i}.ts`), `export const r${i} = ${i};\n`);
+    }
+
+    const res = await prepareDeepReview(project, out, { files: 4, maxChunks: 12 });
+    const session = await loadSession(out, res.session);
+    const bigChunks = session.chunks.filter(c => c.file === 'src/auth/big-admin.ts');
+    const perFileCap = Math.max(Math.ceil(12 / 4), Math.ceil(12 / 4));
+    expect(bigChunks.length).toBeLessThanOrEqual(perFileCap);
+    expect(res.summary.files).toContain('src/auth/small-1.ts');
+    expect(res.summary.files).toContain('src/auth/small-2.ts');
+    expect(res.summary.files).toContain('src/auth/small-3.ts');
+  });
+
+  it('lifts the per-file cap when no reserve is left, uses the budget and notes truncation', async () => {
+    const bigFns: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      bigFns.push(`export function bigHandler_${i}(x: number) {`, `  return x + ${i};`, `}`);
+    }
+    await writeFile(join(project, 'src/auth/big-admin.ts'), bigFns.join('\n') + '\n');
+    await writeFile(join(project, 'src/auth/small-1.ts'), 'export const s1 = 1;\n');
+
+    const res = await prepareDeepReview(project, out, { files: 2, maxChunks: 12 });
+    const session = await loadSession(out, res.session);
+    expect(session.chunks.length).toBe(12);
+    expect(session.chunks.filter(c => c.file === 'src/auth/big-admin.ts').length).toBe(11);
+    expect(res.summary.notes).toContain('Parça sınırı (12) nedeniyle inceleme kapsamı sınırlandı.');
+  });
+
+  it('pulls reserve files when selected files are exhausted and records a balance note', async () => {
+    await writeFile(join(project, 'src/auth/one.ts'), 'export const one = 1;\n');
+    await writeFile(join(project, 'src/auth/two.ts'), 'export const two = 2;\n');
+    await writeFile(join(project, 'src/three.ts'), 'export const three = 3;\n');
+
+    const res = await prepareDeepReview(project, out, { files: 2, maxChunks: 12 });
+    expect(res.summary.files).toHaveLength(3);
+    expect(res.summary.files).toContain('src/three.ts');
+    expect(res.summary.notes).toContain('1 dosya yedek listeden eklendi (parça bütçesi dengelendi).');
+  });
 });

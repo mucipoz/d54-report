@@ -185,4 +185,20 @@ describe('deep/select', () => {
     expect(res.summary.files).toContain('src/auth.ts');
     expect(res.summary.files).toContain('src/Özel.ts');
   });
+
+  it('penalizes UI component .tsx/.jsx paths so server route ranks ahead of admin UI component', async () => {
+    expect(riskScore('src/components/Button.tsx', 100, 0)).toBe(0);
+    const sameText = Array.from({ length: 120 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n';
+    const files: SourceFile[] = [
+      sf('src/components/admin/IslemKayitlariSection.tsx', sameText),
+      sf('app/api/register/route.ts', sameText),
+    ];
+
+    const res = await selectFiles(files, temp, { limit: 2 });
+    expect(res.selected.map(f => f.path)).toEqual([
+      'app/api/register/route.ts',
+      'src/components/admin/IslemKayitlariSection.tsx',
+    ]);
+    expect(res.reserve).toEqual([]);
+  });
 });
