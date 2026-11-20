@@ -33,12 +33,14 @@ export function isCandidatePath(path: string): boolean {
 export function riskScore(path: string, lines: number, recentChanges: number): number {
   const lower = path.replace(/\\/g, '/').toLowerCase();
   let score = 0;
+  let keywordHit = false;
   for (const kw of RISK_KEYWORDS) {
-    if (lower.includes(kw)) score += 10;
+    if (lower.includes(kw)) { score += 10; keywordHit = true; }
   }
   score += Math.min(20, Math.max(0, recentChanges) * 2);
   score += Math.min(10, Math.floor(Math.max(0, lines) / 500));
-  if (UI_COMPONENT_DIR.test(lower) && UI_COMPONENT_EXT.test(lower)) {
+  // Risk kelimesi taşıyan bileşen (ör. admin/ödeme ekranı) iş mantığı içerir; ceza yalnız sıradan arayüze.
+  if (!keywordHit && UI_COMPONENT_DIR.test(lower) && UI_COMPONENT_EXT.test(lower)) {
     score = Math.max(0, score - 10);
   }
   return score;

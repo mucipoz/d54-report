@@ -25,14 +25,14 @@ function isSensitiveForTriage(text: string): boolean {
   return TRIAGE_SENSITIVE_PATTERNS.some(pattern => pattern.test(text));
 }
 
-interface Delimiters {
+export interface Delimiters {
   findingStart: string;
   findingEnd: string;
   codeStart: string;
   codeEnd: string;
 }
 
-function makeDelimiters(): Delimiters {
+export function makeDelimiters(): Delimiters {
   const nonce = randomBytes(8).toString('hex');
   return {
     findingStart: `<<<BULGU_BASLANGIC_${nonce}>>>`,
@@ -56,7 +56,7 @@ function buildSystemPrompt(d: Delimiters): string {
   ].join(' ');
 }
 
-function neutralizeDelimiters(text: string): string {
+export function neutralizeDelimiters(text: string): string {
   return text.replace(/<<</g, '‹‹‹').replace(/>>>/g, '›››');
 }
 

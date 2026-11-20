@@ -137,6 +137,29 @@ describe('deep/session', () => {
     expect(fullRes.summary.notes).not.toContain(note);
   });
 
+  it('interleaves chunk files across files so a budget reading only the head still spans files', async () => {
+    const bigFile = (name: string) => {
+      const out: string[] = [];
+      for (let f = 0; f < 3; f++) {
+        out.push(`export function ${name}_${f}(x: number) {`);
+        for (let i = 0; i < 150; i++) out.push(`  const v${i} = x + ${i}; // ${'p'.repeat(40)}`);
+        out.push('  return x;', '}');
+      }
+      return out.join('\n') + '\n';
+    };
+    await writeFile(join(project, 'src/auth/alpha-admin.ts'), bigFile('alpha'));
+    await writeFile(join(project, 'src/auth/beta-admin.ts'), bigFile('beta'));
+
+    const res = await prepareDeepReview(project, out, { files: 2, maxChunks: 6 });
+    const firstFiles: string[] = [];
+    for (const p of res.chunkFiles.slice(0, 2)) {
+      const m = /^### (.+?) · /m.exec(await readFile(p, 'utf8'));
+      firstFiles.push(m![1]!);
+    }
+    expect(res.chunkFiles.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(firstFiles).size).toBe(2);
+  });
+
   it('caps chunks per file at perFileCap so one large file cannot monopolize maxChunks', async () => {
     const bigFns: string[] = [];
     for (let i = 0; i < 60; i++) {

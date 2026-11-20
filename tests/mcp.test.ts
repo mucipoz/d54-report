@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -82,6 +83,7 @@ it('serves scan, report and verified patch operations over clean JSON-RPC stdio'
     const catalog = await client.listTools();
     expect(catalog.tools.map(tool => tool.name).sort()).toEqual([
       'd54_deep_review_prepare',
+      'd54_deep_review_run',
       'd54_deep_review_submit',
       'd54_fix_findings',
       'd54_get_report',
@@ -393,5 +395,330 @@ it('serves d54_deep_review_prepare and d54_deep_review_submit via MCP and CLI, r
     expect(cliSub.report_paths.json).toMatch(/\.json$/);
   } finally {
     await rm(temp, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it('serves d54_deep_review_run via MCP using configured local loopback provider', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-deep-run-'));
+  let callIndex = 0;
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    callIndex++;
+    const content = callIndex === 1
+      ? JSON.stringify({
+          candidates: [
+            {
+              category: 'authz',
+              file: 'src/auth/login.ts',
+              line: 3,
+              quote: 'return { allowed: true };',
+              title: 'Admin olmayan role izin veriliyor',
+              impact: 'Yetkisiz erişim açığı.',
+              advice: 'role !== "admin" durumunda reddedin.',
+            },
+          ],
+        })
+      : JSON.stringify({
+          verdict: 'confirmed',
+          severity: 'critical',
+          reason: 'Doğrudan ters koşul.',
+        });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 100, completion_tokens: 50 },
+    }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('HTTP sunucusu başlatılamadı.');
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+  const client = new Client({ name: 'd54-deep-run-mcp', version: '1.0.0' });
+
+  try {
+    await mkdir(join(temp, 'src/auth'), { recursive: true });
+    await writeFile(
+      join(temp, 'src/auth/login.ts'),
+      [
+        'export function verifyRole(role: string) {',
+        '  if (role !== "admin") {',
+        '    return { allowed: true };',
+        '  }',
+        '  return { allowed: false };',
+        '}',
+      ].join('\n') + '\n',
+    );
+    const configPath = join(temp, 'mcp-llm.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({ provider: 'openai-compatible', model: 'mcp-mock-model', base_url: baseUrl }),
+    );
+    const env = { ...getDefaultEnvironment(), D54_MCP_CONFIG: configPath, NO_COLOR: '1' };
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      cwd: temp,
+      env,
+      stderr: 'inherit',
+      args: [join(repo, 'dist/mcp-server.js')],
+    });
+    await client.connect(transport);
+    const runRes = await client.callTool({
+      name: 'd54_deep_review_run',
+      arguments: { path: temp, budget: 4 },
+    });
+    expect(runRes.isError, JSON.stringify(runRes.content)).not.toBe(true);
+    const data = runRes.structuredContent as {
+      accepted: number;
+      rejected: { index: number; reason: string }[];
+      summary: Report['summary'];
+      report_paths: { markdown: string; json: string };
+      usage: { calls: number; inputTokens: number; outputTokens: number; model: string; confirmed: number };
+    };
+    expect(data.accepted).toBe(1);
+    expect(data.rejected).toEqual([]);
+    expect(data.usage).toMatchObject({
+      calls: 2,
+      inputTokens: 200,
+      outputTokens: 100,
+      model: 'mcp-mock-model',
+      confirmed: 1,
+    });
+    const saved: Report = JSON.parse(await readFile(data.report_paths.json, 'utf8'));
+    expect(saved.findings[0]!.title).toBe('Derin inceleme · Admin olmayan role izin veriliyor');
+  } finally {
+    try {
+      await client.close();
+    } finally {
+      await new Promise<void>(resolve => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
+      await rm(temp, { recursive: true, force: true });
+    }
+  }
+}, 60_000);
+
+it('rejects budget < 2 and enforces D54_MCP_DEEP_MAX_BUDGET cap with a response note', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-deep-cap-'));
+  let serverCalls = 0;
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    serverCalls++;
+    const content = serverCalls <= 2
+      ? JSON.stringify({
+          candidates: [
+            {
+              category: 'logic',
+              file: `src/auth/mod${serverCalls}.ts`,
+              line: 222,
+              quote: 'if (input < 0) return { ok: true };',
+              title: `Ters mantık ${serverCalls}`,
+              impact: 'Hatalı kabul.',
+              advice: 'Koşulu düzeltin.',
+            },
+          ],
+        })
+      : JSON.stringify({ verdict: 'confirmed', severity: 'high', reason: 'Doğrulandı.' });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 40, completion_tokens: 15 },
+    }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('HTTP sunucusu başlatılamadı.');
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+  const client = new Client({ name: 'd54-deep-cap-mcp', version: '1.0.0' });
+
+  try {
+    await mkdir(join(temp, 'src/auth'), { recursive: true });
+    for (let i = 1; i <= 4; i++) {
+      const filler = Array.from({ length: 220 }, (_, k) => `  const check_${i}_${k} = input + ${k};`).join('\n');
+      await writeFile(
+        join(temp, `src/auth/mod${i}.ts`),
+        `export function handler${i}(input: number) {\n${filler}\n  if (input < 0) return { ok: true };\n  return { ok: false };\n}\n`,
+      );
+    }
+    const configPath = join(temp, 'mcp-llm.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({ provider: 'openai-compatible', model: 'mcp-cap-model', base_url: baseUrl }),
+    );
+    const env = {
+      ...getDefaultEnvironment(),
+      D54_MCP_CONFIG: configPath,
+      D54_MCP_DEEP_MAX_BUDGET: '4',
+      NO_COLOR: '1',
+    };
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      cwd: temp,
+      env,
+      stderr: 'inherit',
+      args: [join(repo, 'dist/mcp-server.js')],
+    });
+    await client.connect(transport);
+
+    const badBudget = await client.callTool({
+      name: 'd54_deep_review_run',
+      arguments: { path: temp, budget: 1 },
+    });
+    expect(badBudget.isError).toBe(true);
+    expect(serverCalls).toBe(0);
+
+    const capped = await client.callTool({
+      name: 'd54_deep_review_run',
+      arguments: { path: temp, budget: 20 },
+    });
+    expect(capped.isError, JSON.stringify(capped.content)).not.toBe(true);
+    const data = capped.structuredContent as {
+      notes?: string[];
+      report_paths: { json: string };
+      usage: { calls: number };
+    };
+    expect(data.usage.calls).toBeLessThanOrEqual(4);
+    expect(data.notes?.some(n => n.includes('MCP bütçe tavanı (4)') && n.includes('20'))).toBe(true);
+    const saved: Report = JSON.parse(await readFile(data.report_paths.json, 'utf8'));
+    expect(saved.coverage.some(c => c.includes('MCP bütçe tavanı (4)'))).toBe(true);
+  } finally {
+    try {
+      await client.close();
+    } finally {
+      await new Promise<void>(resolve => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
+      await rm(temp, { recursive: true, force: true });
+    }
+  }
+}, 60_000);
+
+it('passes D54_DEEP_CONTEXT_FILE to discovery and verify system prompts in d54_deep_review_run without exposing context path input', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'd54-mcp-deep-ctx-'));
+  let callIndex = 0;
+  const seenRequests: { system: string; user: string }[] = [];
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const ch of req) chunks.push(ch as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+      messages: { role: string; content: string }[];
+    };
+    seenRequests.push({
+      system: body.messages[0]?.content ?? '',
+      user: body.messages[1]?.content ?? '',
+    });
+    callIndex++;
+    const content = callIndex === 1
+      ? JSON.stringify({
+          candidates: [
+            {
+              category: 'authz',
+              file: 'src/auth/guard.ts',
+              line: 2,
+              quote: 'return { ok: true };',
+              title: 'Üst katman korumalı uç',
+              impact: 'Yetkisiz erişim şüphesi.',
+              advice: 'Ağ geçidi oturum doğrulamasını kontrol edin.',
+            },
+          ],
+        })
+      : JSON.stringify({
+          verdict: 'rejected',
+          severity: 'low',
+          reason: 'Operatör notuna göre üst ağ geçidinde doğrulanıyor.',
+        });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 50, completion_tokens: 25 },
+    }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('HTTP sunucusu başlatılamadı.');
+  const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+  const client = new Client({ name: 'd54-deep-ctx-mcp', version: '1.0.0' });
+
+  try {
+    await mkdir(join(temp, 'src/auth'), { recursive: true });
+    await writeFile(
+      join(temp, 'src/auth/guard.ts'),
+      [
+        'export function handleAdminAction() {',
+        '  return { ok: true };',
+        '}',
+      ].join('\n') + '\n',
+    );
+    const contextFile = join(temp, 'operator-context.txt');
+    const contextText = 'MCP-ÜST-KATMAN-KORUMA-NOTU: Tüm /admin yolları ağ geçidinde JWT ile doğrulanır.';
+    await writeFile(contextFile, contextText, 'utf8');
+
+    const configPath = join(temp, 'mcp-llm.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({ provider: 'openai-compatible', model: 'mcp-ctx-model', base_url: baseUrl }),
+    );
+    const env = {
+      ...getDefaultEnvironment(),
+      D54_MCP_CONFIG: configPath,
+      D54_DEEP_CONTEXT_FILE: contextFile,
+      NO_COLOR: '1',
+    };
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      cwd: temp,
+      env,
+      stderr: 'inherit',
+      args: [join(repo, 'dist/mcp-server.js')],
+    });
+    await client.connect(transport);
+
+    const catalog = await client.listTools();
+    const runTool = catalog.tools.find(t => t.name === 'd54_deep_review_run');
+    expect(runTool).toBeDefined();
+    const props = (runTool?.inputSchema as { properties?: Record<string, unknown> })?.properties ?? {};
+    expect(props).not.toHaveProperty('context');
+    expect(props).not.toHaveProperty('contextFile');
+
+    const runRes = await client.callTool({
+      name: 'd54_deep_review_run',
+      arguments: { path: temp, budget: 4 },
+    });
+    expect(runRes.isError, JSON.stringify(runRes.content)).not.toBe(true);
+    const data = runRes.structuredContent as {
+      accepted: number;
+      report_paths: { json: string; markdown: string };
+      usage: { calls: number; rejected: number };
+    };
+    expect(data.accepted).toBe(0);
+    expect(data.usage.calls).toBe(2);
+    expect(data.usage.rejected).toBe(1);
+
+    expect(seenRequests).toHaveLength(2);
+    for (const reqMsg of seenRequests) {
+      expect(reqMsg.system).toContain('Operatör mimari notu');
+      expect(reqMsg.system).toContain(contextText);
+      expect(reqMsg.user).not.toContain('MCP-ÜST-KATMAN-KORUMA-NOTU');
+      expect(reqMsg.user).not.toContain('Operatör mimari notu');
+    }
+
+    const expectedByteNote = `Operatör bağlam notu kullanıldı (${Buffer.byteLength(contextText, 'utf8')} bayt).`;
+    const savedJson = await readFile(data.report_paths.json, 'utf8');
+    const savedMd = await readFile(data.report_paths.markdown, 'utf8');
+    expect(savedJson).toContain(expectedByteNote);
+    expect(savedMd).toContain(expectedByteNote);
+    expect(savedJson).not.toContain('MCP-ÜST-KATMAN-KORUMA-NOTU');
+    expect(savedMd).not.toContain('MCP-ÜST-KATMAN-KORUMA-NOTU');
+  } finally {
+    try {
+      await client.close();
+    } finally {
+      await new Promise<void>(resolve => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
+      await rm(temp, { recursive: true, force: true });
+    }
   }
 }, 60_000);

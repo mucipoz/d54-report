@@ -186,8 +186,10 @@ describe('deep/select', () => {
     expect(res.summary.files).toContain('src/Özel.ts');
   });
 
-  it('penalizes UI component .tsx/.jsx paths so server route ranks ahead of admin UI component', async () => {
+  it('penalizes plain UI components but not risk-keyword components (admin UI keeps its score)', async () => {
     expect(riskScore('src/components/Button.tsx', 100, 0)).toBe(0);
+    expect(riskScore('src/components/Card.tsx', 100, 5)).toBe(0);
+    expect(riskScore('src/components/admin/IslemKayitlariSection.tsx', 100, 0)).toBe(20); // admin + kayit
     const sameText = Array.from({ length: 120 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n';
     const files: SourceFile[] = [
       sf('src/components/admin/IslemKayitlariSection.tsx', sameText),

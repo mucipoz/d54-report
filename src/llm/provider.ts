@@ -5,9 +5,28 @@ import { parse } from 'dotenv';
 import { OpenAICompatible } from './openai-compatible.js';
 import { Anthropic } from './anthropic.js';
 
+export type LLMEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface LLMUsage {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface LLMCompleteOptions {
+  maxTokens?: number;
+  timeoutMs?: number;
+  effort?: LLMEffort;
+}
+
 export interface LLMProvider {
   readonly model?: string;
-  complete(system: string, input: string): Promise<string>;
+  readonly usage?: LLMUsage;
+  complete(system: string, input: string, opts?: LLMCompleteOptions): Promise<string>;
+}
+
+export function tokenCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 const endpoints = {
   anthropic:'https://api.anthropic.com/v1', openai:'https://api.openai.com/v1',

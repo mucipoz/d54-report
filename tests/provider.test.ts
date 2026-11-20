@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { loadProvider } from '../src/llm/provider.js';
+import { Anthropic } from '../src/llm/anthropic.js';
+import { OpenAICompatible } from '../src/llm/openai-compatible.js';
 import { review } from '../src/llm/review.js';
 import { triage } from '../src/llm/triage.js';
 import { findingSchema } from '../src/reporters/read.js';
@@ -585,4 +587,154 @@ it('reports how many findings were not sent when the default 30 limit is exceede
   expect(res.findings[30]!.triage).toBeUndefined();
   expect(res.notes[0]).toContain('Triyaj: 30 bulgu modele gönderildi (sınır 30).');
   expect(res.notes[0]).toContain('3 bulgu sınır nedeniyle gönderilmedi');
+});
+
+it('tracks usage tokens (including cache tokens) and handles maxTokens, refusal, and max_tokens stop_reason via mocked fetch', async () => {
+  const mockFetch = vi.fn()
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'Anthropic OK' }],
+          stop_reason: 'end_turn',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 40,
+            cache_read_input_tokens: 25,
+            cache_creation_input_tokens: 10,
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'Kısmi' }],
+          stop_reason: 'max_tokens',
+          usage: { input_tokens: 50, output_tokens: 16000 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          content: [],
+          stop_reason: 'refusal',
+          usage: { input_tokens: 15 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    .mockResolvedValueOnce(new Response('fail', { status: 500 }))
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'OpenAI OK' } }],
+          usage: { prompt_tokens: 80, completion_tokens: 20 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'OpenAI NoUsage' } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+  vi.stubGlobal('fetch', mockFetch);
+  try {
+    const anthropic = new Anthropic({ base: 'https://api.example.test/v1', model: 'claude-test', key: 'k' });
+    expect(anthropic.usage).toEqual({ calls: 0, inputTokens: 0, outputTokens: 0 });
+
+    expect(await anthropic.complete('sys', 'usr')).toBe('Anthropic OK');
+    expect(JSON.parse(String(mockFetch.mock.calls[0]![1]?.body))).toMatchObject({ max_tokens: 3072 });
+
+    await expect(anthropic.complete('sys', 'usr', { maxTokens: 16000 })).rejects.toThrow('Model yanıtı kesildi.');
+    expect(JSON.parse(String(mockFetch.mock.calls[1]![1]?.body))).toMatchObject({ max_tokens: 16000 });
+
+    await expect(anthropic.complete('sys', 'usr')).rejects.toThrow('Model isteği reddetti.');
+    await expect(anthropic.complete('sys', 'usr')).rejects.toThrow('Model HTTP 500');
+
+    expect(anthropic.usage).toEqual({
+      calls: 4,
+      inputTokens: 100 + 25 + 10 + 50 + 15,
+      outputTokens: 40 + 16000,
+    });
+
+    const openai = new OpenAICompatible({ base: 'https://api.example.test/v1', model: 'gpt-test', key: 'k' });
+    expect(await openai.complete('sys', 'usr', { maxTokens: 16000 })).toBe('OpenAI OK');
+    expect(JSON.parse(String(mockFetch.mock.calls[4]![1]?.body))).toMatchObject({ max_tokens: 16000 });
+
+    expect(await openai.complete('sys', 'usr')).toBe('OpenAI NoUsage');
+    expect(JSON.parse(String(mockFetch.mock.calls[5]![1]?.body))).not.toHaveProperty('max_tokens');
+
+    expect(openai.usage).toEqual({
+      calls: 2,
+      inputTokens: 80,
+      outputTokens: 20,
+    });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('sends max_completion_tokens only for api.openai.com and max_tokens for other OpenAI-compatible hosts', async () => {
+  const mockFetch = vi.fn(async () =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: 'OK' } }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ),
+  );
+  vi.stubGlobal('fetch', mockFetch);
+  try {
+    const official = new OpenAICompatible({ base: 'https://api.openai.com/v1', model: 'gpt-5', key: 'k' });
+    await official.complete('sys', 'usr', { maxTokens: 4096 });
+    const officialBody = JSON.parse(String(mockFetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+    expect(officialBody.max_completion_tokens).toBe(4096);
+    expect(officialBody).not.toHaveProperty('max_tokens');
+
+    const compat = new OpenAICompatible({ base: 'https://api.deepseek.com/v1', model: 'ds-chat', key: 'k' });
+    await compat.complete('sys', 'usr', { maxTokens: 4096 });
+    const compatBody = JSON.parse(String(mockFetch.mock.calls[1]![1]?.body)) as Record<string, unknown>;
+    expect(compatBody.max_tokens).toBe(4096);
+    expect(compatBody).not.toHaveProperty('max_completion_tokens');
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('sends output_config.effort for Anthropic when effort is specified, and omits it when undefined', async () => {
+  const mockFetch = vi.fn(async () =>
+    new Response(
+      JSON.stringify({
+        content: [{ type: 'text', text: 'Anthropic OK' }],
+        choices: [{ message: { content: 'OpenAI OK' } }],
+        stop_reason: 'end_turn',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ),
+  );
+  vi.stubGlobal('fetch', mockFetch);
+  try {
+    const anthropic = new Anthropic({ base: 'https://api.example.test/v1', model: 'claude-3-7-sonnet', key: 'k' });
+    await anthropic.complete('sys', 'usr', { effort: 'high' });
+    const callBodyWithEffort = JSON.parse(String(mockFetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+    expect(callBodyWithEffort.output_config).toEqual({ effort: 'high' });
+
+    await anthropic.complete('sys', 'usr');
+    const callBodyWithoutEffort = JSON.parse(String(mockFetch.mock.calls[1]![1]?.body)) as Record<string, unknown>;
+    expect(callBodyWithoutEffort).not.toHaveProperty('output_config');
+
+    const openai = new OpenAICompatible({ base: 'https://api.openai.com/v1', model: 'gpt-4o', key: 'k' });
+    await openai.complete('sys', 'usr', { effort: 'high' });
+    const openaiBody = JSON.parse(String(mockFetch.mock.calls[2]![1]?.body)) as Record<string, unknown>;
+    expect(openaiBody).not.toHaveProperty('output_config');
+    expect(openaiBody).not.toHaveProperty('effort');
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
