@@ -176,9 +176,11 @@ export async function prepareDeepReview(
   const cursors = plans.map(() => 0);
   let reserveIdx = 0;
   let reserveAdded = 0;
+  // Yedek dosyalar da tükenince sınır kalkar: bütçe boşa gitmez, kalan parçalar kapsam notuna yansır.
+  let capLifted = false;
 
   while (pickedCount < maxChunks) {
-    const perFileCap = Math.max(
+    const perFileCap = capLifted ? Infinity : Math.max(
       Math.ceil(maxChunks / 4),
       Math.ceil(maxChunks / Math.max(1, plans.length)),
     );
@@ -204,6 +206,10 @@ export async function prepareDeepReview(
         plans.push(makePlan(sel.reserve[reserveIdx++]!));
         cursors.push(0);
         reserveAdded++;
+        continue;
+      }
+      if (!capLifted && plans.some((p, i) => cursors[i]! < p.candidates.length)) {
+        capLifted = true;
         continue;
       }
       break;
