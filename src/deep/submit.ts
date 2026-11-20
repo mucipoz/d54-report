@@ -6,8 +6,19 @@ import { makeReport } from '../reporters/json.js';
 import { readReport } from '../reporters/read.js';
 import { writeReport } from '../reporters/write.js';
 import { severities, type Issue, type Report, type Severity } from '../types.js';
+import type { LLMUsage } from '../llm/provider.js';
 import { deepSensitive } from './chunk.js';
 import { loadSession, sha256Text } from './session.js';
+
+export interface DeepSubmitMeta {
+  source?: 'agent' | 'api';
+  model?: string;
+  usage?: LLMUsage;
+  candidates?: number;
+  unreadable?: number;
+  unverified?: number;
+  notes?: string[];
+}
 
 export const deepCategories = [
   'authz',
@@ -39,6 +50,21 @@ const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 
 function normalizeWs(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+function stripControlAndAnsi(text: string): string {
+  return text
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b[@-_]/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+}
+
+function replaceUrls(text: string): string {
+  return text
+    .replace(/https?:\/\/\S+/gi, '[bağlantı]')
+    .replace(/\S+:\/\/\S+/g, '[bağlantı]')
+    .trim();
 }
 
 function clipQuote(text: string): string {
@@ -81,12 +107,15 @@ export async function submitDeepReview(
   id: string,
   findings: unknown[],
   counts?: { uncertain?: number; rejected?: number },
+  meta?: DeepSubmitMeta,
 ): Promise<{
   accepted: number;
   rejected: { index: number; reason: string }[];
   report: Report;
   prefix: string;
 }> {
+  const isApi = meta?.source === 'api';
+  const titlePrefix = isApi ? 'Derin inceleme · ' : 'Derin inceleme (ajan) · ';
   const rootReal = await realpath(resolve(root));
   const session = await loadSession(out, id);
   if (session.root !== rootReal) {
@@ -183,14 +212,15 @@ export async function submitDeepReview(
       continue;
     }
 
-    const prose = [item.title, item.impact, item.advice, item.reason];
-    if (prose.some(t => !t.trim() || t.length > 800)) {
-      rejected.push({ index, reason: 'metin boş veya çok uzun' });
+    const strippedProse = [item.title, item.impact, item.advice, item.reason].map(stripControlAndAnsi);
+    // Açıklamada "password"/"token" gibi ad geçmesi normal; yalnız gerçek sır değeri reddedilir.
+    if (deepSensitive(item.quote) || strippedProse.some(t => deepSensitive(t))) {
+      rejected.push({ index, reason: 'metin sır deseni içeriyor' });
       continue;
     }
-    // Açıklamada "password"/"token" gibi ad geçmesi normal; yalnız gerçek sır değeri reddedilir.
-    if (deepSensitive(item.quote) || prose.some(t => deepSensitive(t))) {
-      rejected.push({ index, reason: 'metin sır deseni içeriyor' });
+    const [cleanTitle, cleanImpact, cleanAdvice, cleanReason] = strippedProse.map(replaceUrls) as [string, string, string, string];
+    if ([cleanTitle, cleanImpact, cleanAdvice, cleanReason].some(t => !t || t.length > 800)) {
+      rejected.push({ index, reason: 'metin boş veya çok uzun' });
       continue;
     }
 
@@ -215,21 +245,27 @@ export async function submitDeepReview(
       category: item.category === 'authz' ? 'security' : 'bugs',
       rule,
       severity,
-      title: 'Derin inceleme (ajan) · ' + item.title.trim(),
+      title: titlePrefix + cleanTitle,
       file: item.file,
       line: item.line,
       evidence: 'Satır ' + item.line + ': ' + clipQuote(item.quote),
-      impact: item.impact.trim(),
-      advice: item.advice.trim(),
+      impact: cleanImpact,
+      advice: cleanAdvice,
     });
   }
 
   const u = counts?.uncertain ?? 0;
   const r = counts?.rejected ?? 0;
-  const deepNotes = [
-    `Derin inceleme (ajan): ${acceptedIssues.length} kabul, ${rejected.length} ret, ajan bildirimi ${u} belirsiz / ${r} çürütülen.`,
-    'Ajan doğrulamasını D54 Report kanıtlayamaz; satır ve alıntı denetimi yapıldı.',
-  ];
+  const deepNotes = isApi
+    ? [
+        `Derin inceleme (API, ${meta?.model?.trim() || 'bilinmeyen'}): ${acceptedIssues.length} kabul, ${rejected.length} ret; aday ${meta?.candidates ?? 0}, çürütülen ${r}, belirsiz ${u}, okunamayan parça ${meta?.unreadable ?? 0}; ${meta?.usage?.calls ?? 0} model çağrısı, giriş/çıkış ${meta?.usage?.inputTokens ?? 0}/${meta?.usage?.outputTokens ?? 0} jeton. Model çağrıları maliyet doğurur.`,
+        ...(meta?.unverified && meta.unverified > 0 ? [`${meta.unverified} aday bütçe nedeniyle doğrulanmadı.`] : []),
+        ...(meta?.notes ?? []),
+      ]
+    : [
+        `Derin inceleme (ajan): ${acceptedIssues.length} kabul, ${rejected.length} ret, ajan bildirimi ${u} belirsiz / ${r} çürütülen.`,
+        'Ajan doğrulamasını D54 Report kanıtlayamaz; satır ve alıntı denetimi yapıldı.',
+      ];
 
   const baseMerged = makeReport(
     prevReport ? prevReport.target : { project: basename(rootReal), root: rootReal },

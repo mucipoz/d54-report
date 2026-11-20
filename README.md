@@ -595,8 +595,32 @@ d54-report deep submit --path ./demo-app --session <oturum> \
 **Sınırlar:** D54 Report ajanın ikinci doğrulamayı gerçekten yaptığını
 kanıtlayamaz (ajan doğrulamasını kanıtlayamaz); buna karşılık uydurma satır,
 değişmiş dosya, gizli satır ve eşleşmeyen kod alıntılarını kesin olarak
-reddeder. Doğrudan `D54_API_KEY` ile model çağıran API modu sonraki sürümde
-gelecektir.
+reddeder.
+
+## Derin inceleme — API modu
+
+API modu, D54 Report'un yapılandırılmış model sağlayıcısını (`D54_PROVIDER`,
+`D54_MODEL`, `D54_API_KEY` veya `--config`) kullanarak riskli kod parçalarını
+doğrudan incelemesini ve her adayı ayrı bir şüpheci çağrıyla doğrulamasını
+sağlar.
+
+> **Maliyet uyarısı:** `deep run` ve `d54_deep_review_run` gerçek dış model
+> çağrıları yapar ve API kullanım maliyeti doğurur. Toplam çağrı sayısı
+> `--budget` (varsayılan `40`, en çok `200`) ile sınırlanır; bulma çağrıları
+> bütçenin yarısını geçmez, kalan bütçe doğrulamaya ayrılır.
+
+```bash
+d54-report deep run --path ./demo-app --budget 40 --out ./reports/demo
+# İsteğe bağlı fark ve yapılandırma seçenekleri:
+d54-report deep run --path ./demo-app --since main --files 8 --budget 20 --config ./d54-report.config.json
+```
+
+MCP üzerinden aynı akış `d54_deep_review_run({ path, since?, files?, budget? })`
+aracıyla çalıştırılır (`D54_MCP_CONFIG` veya sunucu ortamındaki sağlayıcı
+ayarları gerekir). Kabul edilen bulgular `Derin inceleme · ` başlığıyla en son
+rapora birleştirilir ve kapsam notuna model adı, çağrı sayısı ve giriş/çıkış
+jeton kullanımı eklenir. (`scan --deep-review` bayrağı bu aşamada yer almaz;
+yalnız `deep run` ve `d54_deep_review_run` kullanılır.)
 
 ### Deep review (agent mode)
 
@@ -621,8 +645,29 @@ coding agent's own subscription (Claude Code, Codex, etc.).
 **Limitations:** D54 Report cannot prove that the agent performed an
 independent verification pass ("ajan doğrulamasını kanıtlayamaz"), so it
 enforces strict line, hash, and exact-quote checks and labels findings with
-`Derin inceleme (ajan)`. Direct provider-backed API mode will arrive in the
-next release.
+`Derin inceleme (ajan)`.
+
+### Deep review — API mode
+
+API mode lets D54 Report run the discovery and skeptical verification passes
+directly against your configured LLM provider (`D54_PROVIDER`, `D54_MODEL`,
+`D54_API_KEY`, or `--config`), sharing the same strict line, hash, quote, and
+severity-cap checks before merging into the report.
+
+> **Cost warning:** `deep run` and `d54_deep_review_run` make external model
+> calls and incur API cost. Total calls are capped by `--budget` (default `40`,
+> max `200`), with at most half spent on discovery and the rest reserved for
+> per-candidate skeptical verification.
+
+```bash
+d54-report deep run --path ./demo-app --budget 40 --out ./reports/demo
+```
+
+In MCP, call `d54_deep_review_run({ path, since?, files?, budget? })` using
+the server's `D54_MCP_CONFIG` or provider environment variables. Accepted
+findings are titled `Derin inceleme · <title>` and the coverage note records
+call and input/output token counts. (`scan --deep-review` is not included; use
+`deep run` or `d54_deep_review_run`.)
 
 ## Lisans / License
 

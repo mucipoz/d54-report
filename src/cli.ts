@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { readdir, realpath, stat } from 'node:fs/promises';
+import { readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { runScan, verifyRescan, verifySourceRescan } from './engine.js';
 import { loadProvider } from './llm/provider.js';
@@ -10,6 +10,7 @@ import { readReport } from './reporters/read.js';
 import { readBoundedFile } from './fs-guards.js';
 import { prepareDeepReview } from './deep/session.js';
 import { submitDeepReview } from './deep/submit.js';
+import { loadDeepContextFile, runDeepReviewApi } from './deep/api.js';
 
 const app = new Command().name('d54-report').version('0.1.0').description('Kaynak kodu ve arayüz denetimi / Software audit and approved fixes');
 function common(cmd:Command) {
@@ -123,6 +124,56 @@ deep.command('submit').description('Ajanın doğruladığı derin inceleme bulgu
       rejected: res.rejected,
       summary: res.report.summary,
       report_paths: { markdown: res.prefix + '.md', json: res.prefix + '.json' },
+    }));
+  });
+
+deep.command('run').description('Riskli dosyaları yapılandırılmış model API ile incele, doğrula ve rapora birleştir')
+  .requiredOption('--path <dir>', 'yerel kaynak dizini')
+  .option('--since <ref>', 'yalnız belirtilen git referansından bu yana değişen aralıklar')
+  .option('--files <n>', 'incelenecek en çok dosya sayısı (1..20)')
+  .option('--budget <n>', 'en çok model çağrısı bütçesi (2..200)', '40')
+  .option('--context <file>', 'operatörün güvenilir mimari bağlam notu dosyası (en çok 4096 bayt)')
+  .option('--candidates-out <file>', 'aday günlüğünü JSON olarak kaydet')
+  .option('--config <file>', 'operatörün D54 model yapılandırması')
+  .option('--out <dir>', 'rapor dizini', 'reports')
+  .action(async o => {
+    const budget = parseIntFlag(o.budget, '--budget');
+    if (budget < 2 || budget > 200) throw Error('Bütçe 2 ile 200 arasında bir tam sayı olmalıdır.');
+    const context = await loadDeepContextFile(o.context);
+    const provider = await loadProvider(o.config);
+    if (!provider) throw Error('Derin inceleme API modu için D54_PROVIDER/D54_MODEL/D54_API_KEY gerekir.');
+    const root = await realpath(o.path);
+    const files = o.files !== undefined ? parseIntFlag(o.files, '--files') : undefined;
+    const res = await runDeepReviewApi(root, resolve(o.out), provider, { since: o.since, files, budget, context });
+    if (o.candidatesOut) {
+      const candidatesPath = resolve(o.candidatesOut);
+      const outputLog = res.candidateLog.map(c => ({
+        file: c.file,
+        line: c.line,
+        category: c.category,
+        title: c.title,
+        verdict: c.verdict,
+        ...(c.dropReason ? { dropReason: c.dropReason } : {}),
+      }));
+      await writeFile(candidatesPath, JSON.stringify(outputLog, null, 2) + '\n', 'utf8');
+    }
+    console.log(JSON.stringify({
+      accepted: res.accepted,
+      rejected: res.submitRejected,
+      summary: res.report.summary,
+      report_paths: { markdown: res.prefix + '.md', json: res.prefix + '.json' },
+      usage: {
+        calls: res.calls,
+        inputTokens: res.inputTokens,
+        outputTokens: res.outputTokens,
+        model: res.model,
+        candidates: res.candidates,
+        confirmed: res.confirmed,
+        rejected: res.rejected,
+        uncertain: res.uncertain,
+        unreadable: res.unreadable,
+        unverified: res.unverified,
+      },
     }));
   });
 

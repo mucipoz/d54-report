@@ -13,6 +13,7 @@ import { runFix } from './fixer/index.js';
 import { loadProvider } from './llm/provider.js';
 import { prepareDeepReview } from './deep/session.js';
 import { submitDeepReview } from './deep/submit.js';
+import { loadDeepContextFile, runDeepReviewApi } from './deep/api.js';
 
 // Keep the original stdout writer exclusively for the SDK transport.
 // Scanner/library console output, raw stdout.write and Node warnings go to stderr.
@@ -190,6 +191,79 @@ server.registerTool('d54_deep_review_submit',{
     rejected:res.rejected,
     summary:res.report.summary,
     report_paths:{markdown:res.prefix+'.md',json:res.prefix+'.json'},
+  });
+});
+
+function mcpDeepMaxBudget() {
+  const raw=process.env.D54_MCP_DEEP_MAX_BUDGET;
+  if (raw===undefined || !raw.trim()) return 40;
+  const trimmed=raw.trim();
+  if (!/^\d+$/.test(trimmed)) throw Error('D54_MCP_DEEP_MAX_BUDGET 2 ile 200 arasında bir tam sayı olmalıdır.');
+  const n=Number(trimmed);
+  if (!Number.isInteger(n) || n<2) throw Error('D54_MCP_DEEP_MAX_BUDGET 2 ile 200 arasında bir tam sayı olmalıdır.');
+  return Math.min(200,n);
+}
+
+server.registerTool('d54_deep_review_run',{
+  title:'Run API-backed deep logic review',
+  description:'Run deep logic discovery and skeptical verification against the configured LLM provider (incurs API cost) and merge confirmed findings into a D54 report.',
+  inputSchema:{
+    path:filePath,
+    since:z.string().trim().min(1).max(100).optional(),
+    files:z.number().int().min(1).max(20).optional(),
+    budget:z.number().int().min(2).max(200).optional(),
+  },
+  outputSchema:{
+    accepted:z.number().int().nonnegative(),
+    rejected:z.array(z.object({index:z.number().int().nonnegative(),reason:z.string()})),
+    summary:summarySchema,
+    report_paths:z.object({markdown:z.string(),json:z.string()}),
+    notes:z.array(z.string()).optional(),
+    usage:z.object({
+      calls:z.number().int().nonnegative(),
+      inputTokens:z.number().int().nonnegative(),
+      outputTokens:z.number().int().nonnegative(),
+      model:z.string(),
+      candidates:z.number().int().nonnegative(),
+      confirmed:z.number().int().nonnegative(),
+      rejected:z.number().int().nonnegative(),
+      uncertain:z.number().int().nonnegative(),
+      unreadable:z.number().int().nonnegative(),
+      unverified:z.number().int().nonnegative(),
+    }),
+  },
+  annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true}
+},async ({path,since,files,budget})=>{
+  // shortcut: MCP iptal sinyali runDeepReviewApi'ye geçmiyor, uzun koşularda extra.signal eklenmeli
+  const maxBudget=mcpDeepMaxBudget();
+  const effectiveBudget=budget!==undefined ? Math.min(budget,maxBudget) : maxBudget;
+  const context=await loadDeepContextFile();
+  const notes:string[]=[];
+  if (budget!==undefined && budget>maxBudget) {
+    notes.push(`MCP bütçe tavanı (${maxBudget}) nedeniyle istenen bütçe (${budget}) ${effectiveBudget} ile sınırlandı.`);
+  }
+  const provider=await model();
+  const root=await realpath(resolve(path)),out=join(root,'reports');
+  await regularOutput(out);
+  const res=await runDeepReviewApi(root,out,provider,{since,files,budget:effectiveBudget,notes,context});
+  return structured({
+    accepted:res.accepted,
+    rejected:res.submitRejected,
+    summary:res.report.summary,
+    report_paths:{markdown:res.prefix+'.md',json:res.prefix+'.json'},
+    ...(notes.length ? { notes } : {}),
+    usage:{
+      calls:res.calls,
+      inputTokens:res.inputTokens,
+      outputTokens:res.outputTokens,
+      model:res.model,
+      candidates:res.candidates,
+      confirmed:res.confirmed,
+      rejected:res.rejected,
+      uncertain:res.uncertain,
+      unreadable:res.unreadable,
+      unverified:res.unverified,
+    },
   });
 });
 

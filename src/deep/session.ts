@@ -220,12 +220,17 @@ export async function prepareDeepReview(
     truncatedByBudget = true;
   }
 
-  const rawBlocks: RenderedChunkBlock[] = [];
+  // Dosyalar arası sırayla diz: bütçe parçaların yalnız başını okursa ilk dosyalar hepsini yemesin.
+  const perPlanBlocks: RenderedChunkBlock[][] = [];
   for (const plan of plans) {
     if (!plan.accepted.length) continue;
     const { blocks, skippedMasked: extraMasked } = renderChunksWithStats(plan.file, plan.accepted, MAX_CHUNK_CHARS);
     skippedMasked += extraMasked;
-    rawBlocks.push(...blocks);
+    perPlanBlocks.push(blocks);
+  }
+  const rawBlocks: RenderedChunkBlock[] = [];
+  for (let round = 0; perPlanBlocks.some(b => round < b.length); round++) {
+    for (const blocks of perPlanBlocks) if (round < blocks.length) rawBlocks.push(blocks[round]!);
   }
 
   let finalBlocks = packBlocks(rawBlocks, MAX_CHUNK_CHARS);
